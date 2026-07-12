@@ -35,8 +35,8 @@ Build the control plane that guards a separate external demo service. Optimize f
 - AUTO_RESOLVE may write only after high-confidence, low-risk policy approval.
 - Medium risk downgrades to PR_APPROVAL.
 - Low confidence, blocked files, high risk, migrations, dependencies, auth/billing/secrets downgrade to INVESTIGATE_ONLY.
-- PR_APPROVAL may create branch/commit/draft PR but cannot deploy before approval.
-- INVESTIGATE_ONLY cannot write. It produces root cause, evidence, owner ranking, and handoff.
+- PR_APPROVAL may create branch/commit/PR after `DIAGNOSIS_REVIEW → PATCHING → PATCH_REVIEW → PR_READY`, but cannot merge or deploy automatically.
+- INVESTIGATE_ONLY cannot patch or perform repository writes. It may fetch public issue/CI metadata, read/search allowlisted files, create an isolated checkout, and run one bounded allowlisted reproduction command to produce a cited diagnosis.
 - Never auto-upgrade autonomy above configured mode.
 
 ## Agent Contracts
