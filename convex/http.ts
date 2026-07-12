@@ -9,7 +9,7 @@ const optionalId = <TableName extends TableNames>(value: string | null): Id<Tabl
   value === null ? undefined : asId<TableName>(value);
 const http=httpRouter();
 const options=httpAction(async()=>jsonResponse({ok:true}));
-for(const path of ["/api/projects","/api/incidents","/api/incidents/detail","/api/approvals","/api/models","/api/overview","/api/evaluations","/api/evaluations/runs","/logs"])http.route({path,method:"OPTIONS",handler:options});
+for(const path of ["/api/health","/api/projects","/api/incidents","/api/incidents/detail","/api/approvals","/api/models","/api/overview","/api/evaluations","/api/evaluations/runs","/logs"])http.route({path,method:"OPTIONS",handler:options});
 function finiteNumber(value:unknown,field:string){const n=Number(value);if(!Number.isFinite(n))throw new Error(`${field} must be a finite number`);return n}
 function requiredString(value:unknown,field:string){if(typeof value!=="string"||!value.trim())throw new Error(`${field} is required`);return value}
 http.route({path:"/api/health",method:"GET",handler:httpAction(async()=>jsonResponse({ok:true,service:"on-call-autopilot",timestamp:Date.now()}))});
