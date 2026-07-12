@@ -43,10 +43,137 @@ type DemoLogRow = {
   projectId: Id<"projects">;
 };
 
+type DemoStage = "detected" | "diagnosis" | "patch" | "deploy" | "verify" | "performance" | "resolved";
+type DemoAgentName = "COMMANDER" | "DIAGNOSER" | "FIXER" | "VERIFIER" | "PERFORMANCE" | "REPORTER" | "TEMP_SPECIALIST";
+type DemoRunStatus = "queued" | "running" | "succeeded";
+type DemoAgentPlan = {
+  agent: DemoAgentName;
+  startStage: DemoStage;
+  completeStage: DemoStage;
+  inputSummary: string;
+  outputSummary: string;
+  promptVersion: string;
+  provider?: string;
+  model?: string;
+  tokens: number;
+  cost: number;
+  durationMs: number;
+  offsetMs: number;
+};
+
 const OWNER = "OnCall-Autonomous";
 const REPO = "checkout-demo";
 const PROD = "https://checkout-demo.ashishsoni2002.workers.dev";
 const CHECKOUT_PAYLOAD = { items: [{ id: "sku_1", qty: 2 }], userId: "u_123" };
+
+const STAGE_INDEX: Record<DemoStage, number> = {
+  detected: 0,
+  diagnosis: 1,
+  patch: 2,
+  deploy: 3,
+  verify: 4,
+  performance: 5,
+  resolved: 6,
+};
+
+const RUN_STATUS_RANK: Record<DemoRunStatus, number> = { queued: 0, running: 1, succeeded: 2 };
+
+const DEMO_AGENT_PLANS: DemoAgentPlan[] = [
+  {
+    agent: "COMMANDER",
+    startStage: "detected",
+    completeStage: "diagnosis",
+    inputSummary: "Coordinate autonomous checkout recovery",
+    outputSummary: "Validated incident scope and scheduled the recovery crew.",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-4",
+    promptVersion: "commander-v1",
+    tokens: 1120,
+    cost: 0.013,
+    durationMs: 2400,
+    offsetMs: 900,
+  },
+  {
+    agent: "DIAGNOSER",
+    startStage: "detected",
+    completeStage: "diagnosis",
+    inputSummary: "Correlate checkout 5xx logs, recent deploys, and code diff",
+    outputSummary: "Found checkout reads pricing.cost although the item type exposes price.",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-4",
+    promptVersion: "diagnoser-v1",
+    tokens: 2840,
+    cost: 0.034,
+    durationMs: 11800,
+    offsetMs: 3200,
+  },
+  {
+    agent: "TEMP_SPECIALIST",
+    startStage: "diagnosis",
+    completeStage: "diagnosis",
+    inputSummary: "Decide whether a specialist is needed for the checkout regression",
+    outputSummary: "No specialist needed; root cause confidence is above threshold.",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-4",
+    promptVersion: "specialist-v1",
+    tokens: 460,
+    cost: 0.006,
+    durationMs: 1300,
+    offsetMs: 8900,
+  },
+  {
+    agent: "FIXER",
+    startStage: "diagnosis",
+    completeStage: "patch",
+    inputSummary: "Prepare the minimal checkout pricing patch",
+    outputSummary: "Generated a one-file fix and opened a guarded PR.",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-4",
+    promptVersion: "fixer-v1",
+    tokens: 3920,
+    cost: 0.047,
+    durationMs: 15400,
+    offsetMs: 12_800,
+  },
+  {
+    agent: "VERIFIER",
+    startStage: "deploy",
+    completeStage: "verify",
+    inputSummary: "Replay the exact production checkout request",
+    outputSummary: "Independent HTTP replay returned 200 confirmed with order id.",
+    promptVersion: "verifier-v1",
+    tokens: 0,
+    cost: 0,
+    durationMs: 3900,
+    offsetMs: 35_500,
+  },
+  {
+    agent: "PERFORMANCE",
+    startStage: "verify",
+    completeStage: "performance",
+    inputSummary: "Measure post-fix checkout latency and success rate",
+    outputSummary: "Post-fix samples passed latency and success-rate gates.",
+    promptVersion: "performance-v1",
+    tokens: 0,
+    cost: 0,
+    durationMs: 2600,
+    offsetMs: 41_200,
+  },
+  {
+    agent: "REPORTER",
+    startStage: "performance",
+    completeStage: "resolved",
+    inputSummary: "Summarize the recovery and evidence trail",
+    outputSummary: "Wrote the final incident summary with PR, deploy, verification, and performance proof.",
+    provider: "openrouter",
+    model: "openai/gpt-4.1-mini",
+    promptVersion: "reporter-v1",
+    tokens: 980,
+    cost: 0.004,
+    durationMs: 2100,
+    offsetMs: 45_500,
+  },
+];
 
 const SCENARIOS: Scenario[] = [
   {
@@ -208,6 +335,122 @@ async function seedScenarioLogs(ctx: MutationCtx, projectId: Id<"projects">, s: 
   return inserted;
 }
 
+function statusForStage(plan: DemoAgentPlan, stage: DemoStage): DemoRunStatus {
+  const current = STAGE_INDEX[stage];
+  if (current < STAGE_INDEX[plan.startStage]) return "queued";
+  if (current >= STAGE_INDEX[plan.completeStage]) return "succeeded";
+  return "running";
+}
+
+function stageForIncidentStatus(status: string, hasRootCause: boolean): DemoStage {
+  if (status === "DETECTED" || status === "DIAGNOSING") return "detected";
+  if (status === "DIAGNOSIS_REVIEW") return "diagnosis";
+  if (["PATCHING", "PATCH_REVIEW", "PR_READY", "AWAITING_APPROVAL"].includes(status)) return "patch";
+  if (status === "DEPLOYING") return "deploy";
+  if (status === "VERIFYING") return "verify";
+  if (status === "PERF_CHECK") return "performance";
+  if (status === "RESOLVED") return "resolved";
+  return hasRootCause ? "resolved" : "detected";
+}
+
+async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, stage: DemoStage) {
+  const incident = await ctx.db.get(incidentId);
+  if (!incident) throw new Error("INCIDENT_NOT_FOUND");
+
+  const existingRuns = await ctx.db
+    .query("agentRuns")
+    .withIndex("by_incidentId_and_queuedAt", (q) => q.eq("incidentId", incidentId))
+    .take(50);
+  const existingEvents = await ctx.db
+    .query("events")
+    .withIndex("by_incident_time", (q) => q.eq("incidentId", incidentId))
+    .take(300);
+  const runsByKey = new Map(existingRuns.map((run) => [run.idempotencyKey, run]));
+  const eventKeys = new Set(existingEvents.map((event) => `${event.runId ?? ""}:${event.status}`));
+  let commanderRunId: Id<"agentRuns"> | undefined;
+  let upserted = 0;
+  let eventsInserted = 0;
+
+  async function ensureEvent(
+    runId: Id<"agentRuns">,
+    status: DemoRunStatus,
+    timestamp: number,
+    metadata: Record<string, unknown>,
+  ) {
+    const eventKey = `${runId}:${status}`;
+    if (eventKeys.has(eventKey)) return;
+    await ctx.db.insert("events", {
+      incidentId,
+      runId,
+      type: "AGENT_RUN",
+      status,
+      timestamp,
+      metadata: { ...metadata, demoSynthetic: true },
+    });
+    eventKeys.add(eventKey);
+    eventsInserted += 1;
+  }
+
+  for (const plan of DEMO_AGENT_PLANS) {
+    const idempotencyKey = `${incidentId}:demo-agent:${plan.agent}`;
+    const targetStatus = statusForStage(plan, stage);
+    const queuedAt = incident.startedAt + plan.offsetMs;
+    const startedAt = queuedAt + 500;
+    const finishedAt = startedAt + plan.durationMs;
+    const existing = runsByKey.get(idempotencyKey);
+    const parentRunId = plan.agent === "COMMANDER" ? undefined : commanderRunId;
+    const status =
+      existing && RUN_STATUS_RANK[existing.status as DemoRunStatus] > RUN_STATUS_RANK[targetStatus]
+        ? (existing.status as DemoRunStatus)
+        : targetStatus;
+    const terminal = status === "succeeded";
+    const running = status === "running" || terminal;
+    const runPatch = {
+      incidentId,
+      ...(parentRunId ? { parentRunId } : {}),
+      agent: plan.agent,
+      status,
+      idempotencyKey,
+      inputSummary: plan.inputSummary,
+      outputSummary: terminal ? plan.outputSummary : undefined,
+      provider: plan.provider,
+      model: plan.model,
+      promptVersion: plan.promptVersion,
+      tokens: terminal ? plan.tokens : undefined,
+      cost: terminal ? plan.cost : undefined,
+      durationMs: terminal ? plan.durationMs : undefined,
+      queuedAt,
+      startedAt: running ? startedAt : undefined,
+      finishedAt: terminal ? finishedAt : undefined,
+    };
+    const runId = existing ? existing._id : await ctx.db.insert("agentRuns", runPatch);
+    if (existing) await ctx.db.patch(existing._id, runPatch);
+    if (plan.agent === "COMMANDER") commanderRunId = runId;
+
+    const common = {
+      agent: plan.agent,
+      parentRunId,
+      provider: plan.provider,
+      model: plan.model,
+      promptVersion: plan.promptVersion,
+      idempotencyKey,
+    };
+    await ensureEvent(runId, "queued", queuedAt, common);
+    if (running) await ensureEvent(runId, "running", startedAt, common);
+    if (terminal) {
+      await ensureEvent(runId, "succeeded", finishedAt, {
+        ...common,
+        durationMs: plan.durationMs,
+        tokens: plan.tokens,
+        cost: plan.cost,
+      });
+    }
+    upserted += 1;
+  }
+
+  return { upserted, eventsInserted };
+}
+
 export const seedIncidents = mutation({
   args: {},
   handler: async (ctx) => {
@@ -225,6 +468,7 @@ export const seedIncidents = mutation({
         .unique();
       if (existing) {
         logsSeeded += await seedScenarioLogs(ctx, project._id, s, existing.startedAt);
+        await syncDemoAgentRuns(ctx, existing._id, "resolved");
         created.push({ incidentId: existing._id, prNumber: s.prNumber });
         continue;
       }
@@ -344,12 +588,29 @@ export const seedIncidents = mutation({
         await ctx.db.insert("events", { incidentId, ...e });
       }
       logsSeeded += await seedScenarioLogs(ctx, project._id, s, startedAt);
+      await syncDemoAgentRuns(ctx, incidentId, "resolved");
 
       created.push({ incidentId, prNumber: s.prNumber });
     }
 
     return { seeded: created.length, logsSeeded, incidents: created };
   },
+});
+
+export const syncAgentRuns = mutation({
+  args: {
+    incidentId: v.id("incidents"),
+    stage: v.union(
+      v.literal("detected"),
+      v.literal("diagnosis"),
+      v.literal("patch"),
+      v.literal("deploy"),
+      v.literal("verify"),
+      v.literal("performance"),
+      v.literal("resolved"),
+    ),
+  },
+  handler: async (ctx, args) => syncDemoAgentRuns(ctx, args.incidentId, args.stage),
 });
 
 export const backfillRootCauses = mutation({
@@ -384,5 +645,26 @@ export const backfillRootCauses = mutation({
     }
 
     return { checked: incidents.length, updated, incidentIds };
+  },
+});
+
+export const backfillAgentRuns = mutation({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(args.limit ?? 100, 1), 200);
+    const incidents = await ctx.db.query("incidents").order("desc").take(limit);
+    let upserted = 0;
+    let eventsInserted = 0;
+    const incidentIds: Id<"incidents">[] = [];
+
+    for (const incident of incidents) {
+      const stage = stageForIncidentStatus(incident.status, !!incident.rootCause);
+      const result = await syncDemoAgentRuns(ctx, incident._id, stage);
+      upserted += result.upserted;
+      eventsInserted += result.eventsInserted;
+      incidentIds.push(incident._id);
+    }
+
+    return { checked: incidents.length, upserted, eventsInserted, incidentIds };
   },
 });

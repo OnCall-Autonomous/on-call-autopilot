@@ -92,4 +92,28 @@ describe("dashboard detail", () => {
       error: "Cannot read properties of undefined",
     });
   });
+
+  it("includes synthetic demo agent runs and run events", async () => {
+    const t = convexTest(schema, modules);
+    const incidentId = await createIncidentWithLogs(t);
+
+    await t.mutation(api.demoSeed.syncAgentRuns, { incidentId, stage: "resolved" });
+    const detail = await t.query(api.dashboard.incidentDetail, { incidentId });
+
+    expect(detail?.runs.map((run) => run.agent)).toEqual([
+      "COMMANDER",
+      "DIAGNOSER",
+      "TEMP_SPECIALIST",
+      "FIXER",
+      "VERIFIER",
+      "PERFORMANCE",
+      "REPORTER",
+    ]);
+    expect(detail?.runs.every((run) => run.status === "succeeded")).toBe(true);
+    expect(detail?.runs.find((run) => run.agent === "DIAGNOSER")).toMatchObject({
+      tokens: 2840,
+      cost: 0.034,
+    });
+    expect(detail?.events.filter((event) => event.type === "AGENT_RUN" && event.status === "succeeded")).toHaveLength(7);
+  });
 });

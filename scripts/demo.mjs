@@ -218,6 +218,13 @@ async function move(incidentId, to, metadata) {
   await convex.mutation(api.transitions.move, { incidentId, to, metadata });
   currentStatus = to;
 }
+async function syncAgentRuns(incidentId, stage) {
+  try {
+    await convex.mutation(api.demoSeed.syncAgentRuns, { incidentId, stage });
+  } catch (e) {
+    console.error(`  (agent telemetry sync failed: ${e.message || e})`);
+  }
+}
 class DeadlineError extends Error {}
 function checkDeadline() {
   if (Date.now() > deadlineAt) throw new DeadlineError("recovery exceeded deadline");
@@ -274,6 +281,7 @@ async function recover() {
   currentStatus = "DETECTED";
   deadlineAt = Date.now() + DEADLINE_MS;
   log("incident", `${incidentId} created (AUTO_RESOLVE) · deadline ${(DEADLINE_MS / 60000).toFixed(0)}m`);
+  await syncAgentRuns(incidentId, "detected");
 
   try {
   // 2. Diagnose (LLM proposes patch; verify gate is the real proof)
@@ -292,6 +300,7 @@ async function recover() {
   }
   log("diagnose", `root cause: ${rootCause}`);
   await move(incidentId, "DIAGNOSIS_REVIEW", { rootCause });
+  await syncAgentRuns(incidentId, "diagnosis");
 
   // 3. Patch → PR
   checkDeadline();
@@ -303,10 +312,12 @@ async function recover() {
   const pr = await openPr(fixBranch, "fix: restore checkout pricing computation", `Autonomous fix.\n\nRoot cause: ${rootCause}\n\nIndependent HTTP verification gates resolution.`);
   log("pr", `#${pr.number} opened → ${pr.html_url}`);
   await move(incidentId, "PATCH_REVIEW", { pullRequestUrl: pr.html_url, prNumber: pr.number });
+  await syncAgentRuns(incidentId, "patch");
 
   // 4. Merge + redeploy
   checkDeadline();
   await move(incidentId, "DEPLOYING", { pullRequestUrl: pr.html_url });
+  await syncAgentRuns(incidentId, "deploy");
   const merge = await mergePr(pr.number);
   log("merge", `PR #${pr.number} merged (${merge.sha.slice(0, 7)})`);
   log("deploy", "wrangler deploy from fixed main…");
@@ -339,6 +350,7 @@ async function recover() {
     freshLogsClean: logsClean,
   });
   log("verify", `prod → ${pass.status} ${pass.body.status || ""} | assertions ${passed ? "PASS" : "FAIL"} | logs ${logsClean ? "clean" : "dirty"}`);
+  await syncAgentRuns(incidentId, "verify");
   if (!passed || !logsClean) {
     await move(incidentId, "ROLLING_BACK", { reason: "verification_failed" });
     throw new Error("verification failed after redeploy");
@@ -366,10 +378,12 @@ async function recover() {
     verdict: "PASS",
   });
   log("perf", `p50 ${p50}ms p95 ${p95}ms success ${(successRate * 100).toFixed(0)}% (baseline p95 ${baseP95}ms)`);
+  await syncAgentRuns(incidentId, "performance");
 
   // 7. Resolve (gated by persisted verification + performance)
   checkDeadline();
   await move(incidentId, "RESOLVED", { pullRequestUrl: pr.html_url });
+  await syncAgentRuns(incidentId, "resolved");
   log("resolved", `incident ${incidentId} RESOLVED in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`\n✅ Recovered. PR: ${pr.html_url}`);
   } catch (err) {
