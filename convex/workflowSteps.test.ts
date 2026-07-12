@@ -77,7 +77,12 @@ describe("workflow step persistence", () => {
     expect(running).toHaveLength(1);
     expect(running[0]).toMatchObject({ _id: stepId, status: "running" });
 
-    await t.mutation(internal.workflowSteps.succeed, { stepId, outputSummary: "Diagnosis accepted" });
+    await t.mutation(internal.workflowSteps.succeed, {
+      stepId,
+      outputSummary: "Diagnosis accepted",
+      tokens: 1300,
+      cost: 0.027,
+    });
     const resumable = await t.query(api.workflowSteps.listResumable, { incidentId, limit: 20 });
     const steps = await t.query(api.workflowSteps.listByIncident, { incidentId, limit: 20 });
     const events = await t.run(async (ctx) =>
@@ -87,11 +92,19 @@ describe("workflow step persistence", () => {
         .collect(),
     );
     expect(resumable).toEqual([]);
-    expect(steps[0]).toMatchObject({ status: "succeeded", outputSummary: "Diagnosis accepted" });
+    expect(steps[0]).toMatchObject({
+      status: "succeeded",
+      outputSummary: "Diagnosis accepted",
+      tokens: 1300,
+      cost: 0.027,
+    });
     expect(steps[0].startedAt).toBeTypeOf("number");
     expect(steps[0].finishedAt).toBeTypeOf("number");
+    expect(steps[0].durationMs).toBeTypeOf("number");
     expect(events.map((event) => event.status)).toEqual(["scheduled", "running", "succeeded"]);
     expect(events.every((event) => event.type === "WORKFLOW_STEP")).toBe(true);
+    expect(events.at(-1)?.metadata).toMatchObject({ tokens: 1300, cost: 0.027 });
+    expect(events.at(-1)?.metadata.durationMs).toBeTypeOf("number");
   });
 
   it("persists a typed terminal failure", async () => {
@@ -104,10 +117,22 @@ describe("workflow step persistence", () => {
       timeoutMs: 30_000,
     });
     await t.mutation(internal.workflowSteps.start, { stepId });
-    await t.mutation(internal.workflowSteps.fail, { stepId, errorCode: "MODEL_TIMEOUT", outputSummary: "Planning timed out" });
+    await t.mutation(internal.workflowSteps.fail, {
+      stepId,
+      errorCode: "MODEL_TIMEOUT",
+      outputSummary: "Planning timed out",
+      tokens: 25,
+      cost: 0.001,
+    });
 
     const steps = await t.query(api.workflowSteps.listByIncident, { incidentId, limit: 20 });
-    expect(steps[0]).toMatchObject({ status: "failed", errorCode: "MODEL_TIMEOUT", outputSummary: "Planning timed out" });
+    expect(steps[0]).toMatchObject({
+      status: "failed",
+      errorCode: "MODEL_TIMEOUT",
+      outputSummary: "Planning timed out",
+      tokens: 25,
+      cost: 0.001,
+    });
     expect(await t.query(api.workflowSteps.listResumable, { incidentId, limit: 20 })).toEqual([]);
   });
 });

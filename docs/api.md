@@ -9,7 +9,7 @@ Convex serves these routes from the deployment's `.convex.site` URL. Responses a
 - `POST /api/projects` — create/update a project by repository name.
 - `GET /api/incidents?projectId=&limit=` — newest incidents, maximum 100.
 - `POST /api/incidents` — create an idempotent dashboard incident.
-- `GET /api/incidents/detail?incidentId=` — complete hero-screen aggregate: incident, project, agent tree, timeline, service logs, deployments, verification, performance, approvals.
+- `GET /api/incidents/detail?incidentId=` — complete hero-screen aggregate: incident, project, agent tree, workflow steps, timeline, service logs, deployments, verification, performance, approvals.
 - `GET /api/overview?projectId=` — project list, MTTR/success/active metrics, active incidents.
 - `GET /api/approvals` — pending deployment approvals.
 - `POST /api/approvals` — approve or reject a pending deployment.

@@ -36,12 +36,22 @@ export const incidentDetail = query({
 
     const logWindowStart = incident.startedAt - 5_000;
     const logWindowEnd = (incident.resolvedAt ?? Date.now()) + 5_000;
-    const [project, runs, events, deployments, verifications, performance, approvals, logs] = await Promise.all([
+    const [project, runs, steps, observability, events, deployments, verifications, performance, approvals, logs] = await Promise.all([
       ctx.db.get(incident.projectId),
       ctx.db
         .query("agentRuns")
         .withIndex("by_incident", (q) => q.eq("incidentId", args.incidentId))
         .collect(),
+      ctx.db
+        .query("workflowSteps")
+        .withIndex("by_incidentId_and_scheduledAt", (q) => q.eq("incidentId", args.incidentId))
+        .order("asc")
+        .take(100),
+      ctx.db
+        .query("observabilityRecords")
+        .withIndex("by_incidentId_and_startedAt", (q) => q.eq("incidentId", args.incidentId))
+        .order("desc")
+        .take(100),
       ctx.db
         .query("events")
         .withIndex("by_incident_time", (q) => q.eq("incidentId", args.incidentId))
@@ -70,6 +80,6 @@ export const incidentDetail = query({
         .order("asc")
         .take(100),
     ]);
-    return { incident, project, runs, events, deployments, verifications, performance, approvals, logs };
+    return { incident, project, runs, steps, observability, events, deployments, verifications, performance, approvals, logs };
   },
 });

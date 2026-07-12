@@ -22,6 +22,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api.js";
+import {
+  initLangfuse,
+  langfuseRuntimeStatus,
+  langfuseTraceUrl,
+  shutdownLangfuse,
+  withLangfuseObservation,
+} from "./langfuse.mjs";
 
 // ---- Config -----------------------------------------------------------------
 const env = process.env;
@@ -31,8 +38,9 @@ const OWNER = must("GITHUB_OWNER");
 const REPO = must("GITHUB_REPO");
 const BASE_BRANCH = env.GITHUB_DEFAULT_BRANCH || "main";
 const PROD = (env.GUARDED_PRODUCTION_URL || "").replace(/\/+$/, "");
-const OPENAI_KEY = must("OPENAI_API_KEY");
+const OPENAI_KEY = env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = env.OPENAI_MODEL || "gpt-4o";
+const OPENAI_FALLBACK_MODEL = env.OPENAI_FALLBACK_MODEL || "";
 const WORKER_NAME = env.CLOUDFLARE_WORKER_NAME || "checkout-demo";
 const WORKSPACE = join(homedir(), ".oncall-workspace", "checkout-demo");
 const GH = `https://api.github.com/repos/${OWNER}/${REPO}`;
@@ -73,6 +81,119 @@ function log(step, msg) {
 }
 async function flushEvents() {
   if (pendingEvents.length) await Promise.all(pendingEvents.splice(0));
+}
+
+function shortError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function summarize(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.slice(0, 1_000);
+  if (typeof value === "object") {
+    if ("rootCause" in value && typeof value.rootCause === "string") return value.rootCause.slice(0, 1_000);
+    if ("summary" in value && typeof value.summary === "string") return value.summary.slice(0, 1_000);
+  }
+  return JSON.stringify(value).slice(0, 1_000);
+}
+
+function cleanConvexValue(value) {
+  if (Array.isArray(value)) return value.map(cleanConvexValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .map(([key, entry]) => [key, cleanConvexValue(entry)]),
+    );
+  }
+  return value;
+}
+
+async function recordObservability(incidentId, record) {
+  try {
+    await convex.mutation(api.observability.record, cleanConvexValue({
+      incidentId,
+      metadata: {},
+      ...record,
+    }));
+  } catch (error) {
+    console.error(`  (observability persist failed: ${shortError(error)})`);
+  }
+}
+
+async function observed(incidentId, options, fn) {
+  const startedAt = Date.now();
+  return withLangfuseObservation(options.name, { asType: options.asType ?? "span" }, async (observation) => {
+    const source = options.source ?? (observation.enabled ? "langfuse" : "local");
+    const traceId = observation.traceId();
+    const observationId = observation.observationId();
+    const common = {
+      source,
+      kind: options.kind ?? options.asType ?? "span",
+      name: options.name,
+      idempotencyKey: options.idempotencyKey,
+      traceId,
+      observationId,
+      traceUrl: langfuseTraceUrl(traceId),
+      provider: options.provider,
+      model: options.model,
+      promptVersion: options.promptVersion,
+      inputSummary: options.inputSummary,
+      fallbackFrom: options.fallbackFrom,
+      fallbackTo: options.fallbackTo,
+      startedAt,
+      metadata: {
+        ...(options.metadata ?? {}),
+        langfuseRuntime: langfuseRuntimeStatus().reason,
+      },
+    };
+    observation.update({
+      input: options.input ?? options.inputSummary,
+      metadata: common.metadata,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.modelParameters ? { modelParameters: options.modelParameters } : {}),
+    });
+    await recordObservability(incidentId, { ...common, status: "running" });
+
+    try {
+      const result = await fn(observation);
+      const finishedAt = Date.now();
+      const output = options.output?.(result) ?? result;
+      const outputSummary = options.outputSummary?.(result) ?? summarize(output);
+      const usage = options.usage?.(result);
+      observation.update({
+        output,
+        ...(usage ? { usageDetails: usage } : {}),
+      });
+      await recordObservability(incidentId, {
+        ...common,
+        status: "succeeded",
+        outputSummary,
+        tokens: usage?.totalTokens,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+      });
+      return result;
+    } catch (error) {
+      const finishedAt = Date.now();
+      const message = shortError(error);
+      observation.update({
+        level: "ERROR",
+        statusMessage: message,
+        output: { error: message },
+      });
+      await recordObservability(incidentId, {
+        ...common,
+        status: "failed",
+        outputSummary: message,
+        errorCode: options.errorCode ?? "OBSERVED_OPERATION_FAILED",
+        errorMessage: message,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+      });
+      throw error;
+    }
+  });
 }
 
 // ---- GitHub gateway ---------------------------------------------------------
@@ -175,13 +296,27 @@ async function baselineP95() {
   return b.p95Ms ?? b.p95LatencyMs ?? 85;
 }
 
-// ---- LLM diagnosis ----------------------------------------------------------
-async function diagnose(buggySource, typesSource, errorFingerprint) {
+// ---- Diagnosis --------------------------------------------------------------
+function deterministicDiagnosis(buggySource) {
+  const fixedFile = buggySource.replace(
+    /\(i as unknown as \{ pricing: \{ cost: number \} \}\)\.pricing\.cost/g,
+    "i.price",
+  );
+  return {
+    rootCause:
+      "The checkout handler reads pricing.cost even though the shared line-item type exposes the price field as price.",
+    fixedFile,
+    fallbackUsed: true,
+  };
+}
+
+async function diagnoseWithOpenAI(model, buggySource, typesSource, errorFingerprint) {
+  if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY is not configured");
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { authorization: `Bearer ${OPENAI_KEY}`, "content-type": "application/json" },
     body: JSON.stringify({
-      model: OPENAI_MODEL,
+      model,
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
@@ -200,7 +335,77 @@ async function diagnose(buggySource, typesSource, errorFingerprint) {
   const data = await res.json();
   if (!res.ok) throw new Error(`OpenAI ${res.status}: ${JSON.stringify(data).slice(0, 300)}`);
   const parsed = JSON.parse(data.choices[0].message.content);
-  return { rootCause: parsed.rootCause, fixedFile: parsed.fixedFile };
+  return {
+    rootCause: parsed.rootCause,
+    fixedFile: parsed.fixedFile,
+    usage: data.usage,
+  };
+}
+
+async function diagnose(incidentId, buggySource, typesSource, errorFingerprint) {
+  const models = [...new Set([OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(Boolean))];
+  let firstError;
+
+  for (const [index, model] of models.entries()) {
+    if (!OPENAI_KEY) break;
+    try {
+      return await observed(
+        incidentId,
+        {
+          name: index === 0 ? "diagnose.openai.primary" : "diagnose.openai.fallback",
+          asType: "generation",
+          kind: "generation",
+          idempotencyKey: `${incidentId}:diagnose:${model}`,
+          provider: "openai",
+          model,
+          promptVersion: "diagnoser-v1",
+          inputSummary: `Diagnose checkout 5xx: ${errorFingerprint}`,
+          input: { errorFingerprint, file: HANDLERS_PATH },
+          modelParameters: { temperature: 0, responseFormat: "json_object" },
+          fallbackFrom: index === 0 ? undefined : OPENAI_MODEL,
+          fallbackTo: index === 0 ? undefined : model,
+          output: (result) => ({
+            rootCause: result.rootCause,
+            fixedFileBytes: result.fixedFile.length,
+          }),
+          usage: (result) =>
+            result.usage
+              ? {
+                  promptTokens: result.usage.prompt_tokens,
+                  completionTokens: result.usage.completion_tokens,
+                  totalTokens: result.usage.total_tokens,
+                }
+              : undefined,
+        },
+        () => diagnoseWithOpenAI(model, buggySource, typesSource, errorFingerprint),
+      );
+    } catch (error) {
+      firstError ??= error;
+      if (index === 0 && models.length > 1) {
+        log("diagnose", `primary model failed; trying fallback model ${models[1]}.`);
+      }
+    }
+  }
+
+  if (firstError) log("diagnose", `model diagnosis unavailable; using deterministic fallback (${shortError(firstError)}).`);
+  else log("diagnose", "model diagnosis skipped; OPENAI_API_KEY is not configured.");
+
+  return await observed(
+    incidentId,
+    {
+      name: "diagnose.deterministic-fallback",
+      asType: "guardrail",
+      kind: "fallback",
+      source: "fallback",
+      idempotencyKey: `${incidentId}:diagnose:deterministic-fallback`,
+      inputSummary: "Apply known checkout pricing fallback",
+      outputSummary: (result) => result.rootCause,
+      fallbackFrom: firstError ? "openai" : "missing_openai_key",
+      fallbackTo: "deterministic_patch",
+      metadata: firstError ? { error: shortError(firstError) } : {},
+    },
+    () => deterministicDiagnosis(buggySource),
+  );
 }
 
 // ---- Convex incident lifecycle ---------------------------------------------
@@ -284,19 +489,52 @@ async function recover() {
   await syncAgentRuns(incidentId, "detected");
 
   try {
+  await observed(
+    incidentId,
+    {
+      name: "recovery.autopilot",
+      asType: "agent",
+      kind: "agent",
+      idempotencyKey: `${incidentId}:recovery`,
+      inputSummary: `Recover ${project.repo} ${project.productionUrl}`,
+      metadata: { service: "checkout", repo: project.repo, deadlineMs: DEADLINE_MS },
+      output: () => ({ status: currentStatus }),
+    },
+    async () => {
   // 2. Diagnose (LLM proposes patch; verify gate is the real proof)
   checkDeadline();
   await move(incidentId, "DIAGNOSING");
   const buggy = await getFile(HANDLERS_PATH, BASE_BRANCH);
   const types = await getFile("src/types.ts", BASE_BRANCH);
-  let { rootCause, fixedFile } = await diagnose(buggy.content, types.content, fingerprint);
+  let { rootCause, fixedFile } = await diagnose(incidentId, buggy.content, types.content, fingerprint);
   if (fixedFile.includes(".pricing.cost") || !fixedFile.includes(".price")) {
     // Safety net: fall back to last known-good source if the LLM patch is unsound.
     log("diagnose", "LLM patch failed validation; using known-good source.");
-    fixedFile = (await getFile(HANDLERS_PATH, BUG_BRANCH)).content.replace(
-      /\(i as unknown as \{ pricing: \{ cost: number \} \}\)\.pricing\.cost/g,
-      "i.price",
+    const fallback = await observed(
+      incidentId,
+      {
+        name: "diagnose.validation-fallback",
+        asType: "guardrail",
+        kind: "fallback",
+        source: "fallback",
+        idempotencyKey: `${incidentId}:diagnose:validation-fallback`,
+        inputSummary: "Reject invalid generated patch and use known-good source",
+        fallbackFrom: "generated_patch",
+        fallbackTo: "known_good_source",
+        output: (result) => ({ summary: result.summary, fixedFileBytes: result.fixedFile.length }),
+      },
+      async () => {
+        const source = await getFile(HANDLERS_PATH, BUG_BRANCH);
+        return {
+          summary: "Generated patch failed static validation; applied known-good pricing field repair.",
+          fixedFile: source.content.replace(
+            /\(i as unknown as \{ pricing: \{ cost: number \} \}\)\.pricing\.cost/g,
+            "i.price",
+          ),
+        };
+      },
     );
+    fixedFile = fallback.fixedFile;
   }
   log("diagnose", `root cause: ${rootCause}`);
   await move(incidentId, "DIAGNOSIS_REVIEW", { rootCause });
@@ -306,10 +544,29 @@ async function recover() {
   checkDeadline();
   await move(incidentId, "PATCHING");
   const fixBranch = `fix/checkout-regression-${t0}`;
-  await createBranch(fixBranch, BASE_BRANCH);
-  const head = await getFile(HANDLERS_PATH, fixBranch);
-  await putFile(HANDLERS_PATH, fixBranch, fixedFile, "fix: restore checkout pricing (i.price) to stop 500", head.sha);
-  const pr = await openPr(fixBranch, "fix: restore checkout pricing computation", `Autonomous fix.\n\nRoot cause: ${rootCause}\n\nIndependent HTTP verification gates resolution.`);
+  const pr = await observed(
+    incidentId,
+    {
+      name: "patch.github-pr",
+      asType: "tool",
+      kind: "tool",
+      idempotencyKey: `${incidentId}:patch:${fixBranch}`,
+      inputSummary: `Create ${fixBranch} and open guarded PR`,
+      metadata: { repo: `${OWNER}/${REPO}`, branch: fixBranch, file: HANDLERS_PATH },
+      output: (result) => ({ prNumber: result.number, prUrl: result.html_url }),
+      outputSummary: (result) => `Opened PR #${result.number}`,
+    },
+    async () => {
+      await createBranch(fixBranch, BASE_BRANCH);
+      const head = await getFile(HANDLERS_PATH, fixBranch);
+      await putFile(HANDLERS_PATH, fixBranch, fixedFile, "fix: restore checkout pricing (i.price) to stop 500", head.sha);
+      return openPr(
+        fixBranch,
+        "fix: restore checkout pricing computation",
+        `Autonomous fix.\n\nRoot cause: ${rootCause}\n\nIndependent HTTP verification gates resolution.`,
+      );
+    },
+  );
   log("pr", `#${pr.number} opened → ${pr.html_url}`);
   await move(incidentId, "PATCH_REVIEW", { pullRequestUrl: pr.html_url, prNumber: pr.number });
   await syncAgentRuns(incidentId, "patch");
@@ -321,7 +578,20 @@ async function recover() {
   const merge = await mergePr(pr.number);
   log("merge", `PR #${pr.number} merged (${merge.sha.slice(0, 7)})`);
   log("deploy", "wrangler deploy from fixed main…");
-  const versionId = wranglerDeploy();
+  const versionId = await observed(
+    incidentId,
+    {
+      name: "deploy.cloudflare-worker",
+      asType: "tool",
+      kind: "tool",
+      idempotencyKey: `${incidentId}:deploy:${merge.sha}`,
+      inputSummary: `Deploy ${WORKER_NAME} from ${BASE_BRANCH}`,
+      metadata: { workerName: WORKER_NAME, commitSha: merge.sha },
+      output: (result) => ({ versionId: result }),
+      outputSummary: (result) => `Deployed version ${result}`,
+    },
+    () => wranglerDeploy(),
+  );
   const deploymentId = await convex.mutation(api.evidence.recordDeployment, {
     incidentId,
     branch: BASE_BRANCH,
@@ -335,7 +605,20 @@ async function recover() {
   // 5. Independent verification (the ONLY proof of recovery)
   checkDeadline();
   await move(incidentId, "VERIFYING");
-  const pass = await pollUntil((x) => x.status === 200 && x.body.status === "confirmed", { tries: 20, delayMs: 3000 });
+  const pass = await observed(
+    incidentId,
+    {
+      name: "verify.production-checkout",
+      asType: "tool",
+      kind: "tool",
+      idempotencyKey: `${incidentId}:verify:checkout`,
+      inputSummary: "Replay exact production checkout request",
+      metadata: { method: "POST", path: "/api/checkout" },
+      output: (result) => ({ status: result.status, latencyMs: result.latencyMs, bodyStatus: result.body.status }),
+      outputSummary: (result) => `Checkout replay returned ${result.status}`,
+    },
+    () => pollUntil((x) => x.status === 200 && x.body.status === "confirmed", { tries: 20, delayMs: 3000 }),
+  );
   const assertions = { status200: pass.status === 200, confirmed: pass.body.status === "confirmed", hasOrderId: !!pass.body.orderId };
   const passed = Object.values(assertions).every(Boolean);
   const logsClean = await freshLogsClean();
@@ -359,8 +642,24 @@ async function recover() {
   // 6. Performance
   checkDeadline();
   await move(incidentId, "PERF_CHECK");
-  const samples = [];
-  for (let i = 0; i < 5; i++) samples.push(await checkout());
+  const samples = await observed(
+    incidentId,
+    {
+      name: "performance.checkout-samples",
+      asType: "span",
+      kind: "span",
+      idempotencyKey: `${incidentId}:performance:samples`,
+      inputSummary: "Collect post-fix checkout latency samples",
+      metadata: { samples: 5 },
+      output: (result) => ({ samples: result.length, statuses: result.map((sample) => sample.status) }),
+      outputSummary: (result) => `Collected ${result.length} checkout samples`,
+    },
+    async () => {
+      const rows = [];
+      for (let i = 0; i < 5; i++) rows.push(await checkout());
+      return rows;
+    },
+  );
   const oks = samples.filter((s) => s.status === 200);
   const lat = oks.map((s) => s.latencyMs).sort((a, b) => a - b);
   const p50 = lat[Math.floor(lat.length * 0.5)] ?? pass.latencyMs;
@@ -386,6 +685,8 @@ async function recover() {
   await syncAgentRuns(incidentId, "resolved");
   log("resolved", `incident ${incidentId} RESOLVED in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`\n✅ Recovered. PR: ${pr.html_url}`);
+    },
+  );
   } catch (err) {
     if (err instanceof DeadlineError) {
       await escalate(incidentId, `20-minute recovery deadline exceeded`);
@@ -398,6 +699,9 @@ async function recover() {
 
 // ---- Entry ------------------------------------------------------------------
 const cmd = process.argv[2] || "run";
+const langfuseStatus = await initLangfuse();
+log("observe", langfuseStatus.enabled ? "Langfuse tracing enabled." : `Langfuse tracing local-only (${langfuseStatus.reason}).`);
+let exitCode = 0;
 try {
   if (cmd === "prewarm") ensureWorkspace();
   else if (cmd === "break") await breakProd();
@@ -410,5 +714,12 @@ try {
 } catch (err) {
   console.error(`\n❌ ${err.message || err}`);
   await flushEvents();
-  process.exit(1);
+  exitCode = 1;
+} finally {
+  try {
+    await shutdownLangfuse();
+  } catch (error) {
+    console.error(`  (Langfuse shutdown failed: ${shortError(error)})`);
+  }
 }
+if (exitCode) process.exit(exitCode);

@@ -342,6 +342,19 @@ function statusForStage(plan: DemoAgentPlan, stage: DemoStage): DemoRunStatus {
   return "running";
 }
 
+function demoHex(seed: string, length: number) {
+  const hex = "0123456789abcdef";
+  let hash = 0x811c9dc5;
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    const code = seed.charCodeAt(i % Math.max(seed.length, 1));
+    hash ^= code;
+    hash = Math.imul(hash, 0x01000193);
+    out += hex[(hash >>> ((i % 8) * 4)) & 0xf];
+  }
+  return out;
+}
+
 function stageForIncidentStatus(status: string, hasRootCause: boolean): DemoStage {
   if (status === "DETECTED" || status === "DIAGNOSING") return "detected";
   if (status === "DIAGNOSIS_REVIEW") return "diagnosis";
@@ -365,8 +378,13 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
     .query("events")
     .withIndex("by_incident_time", (q) => q.eq("incidentId", incidentId))
     .take(300);
+  const existingObservability = await ctx.db
+    .query("observabilityRecords")
+    .withIndex("by_incidentId_and_startedAt", (q) => q.eq("incidentId", incidentId))
+    .take(100);
   const runsByKey = new Map(existingRuns.map((run) => [run.idempotencyKey, run]));
   const eventKeys = new Set(existingEvents.map((event) => `${event.runId ?? ""}:${event.status}`));
+  const observabilityKeys = new Set(existingObservability.map((record) => record.idempotencyKey));
   let commanderRunId: Id<"agentRuns"> | undefined;
   let upserted = 0;
   let eventsInserted = 0;
@@ -389,6 +407,40 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
     });
     eventKeys.add(eventKey);
     eventsInserted += 1;
+  }
+
+  async function ensureObservability(
+    runId: Id<"agentRuns">,
+    plan: DemoAgentPlan,
+    startedAt: number,
+    finishedAt: number,
+  ) {
+    const idempotencyKey = `${incidentId}:demo-observability:${plan.agent}`;
+    if (observabilityKeys.has(idempotencyKey)) return;
+    const llm = Boolean(plan.model);
+    await ctx.db.insert("observabilityRecords", {
+      incidentId,
+      runId,
+      source: llm ? "langfuse" : "local",
+      kind: llm ? "generation" : "tool",
+      name: `${plan.agent.toLowerCase()}.${llm ? "generation" : "deterministic"}`,
+      status: "succeeded",
+      idempotencyKey,
+      traceId: demoHex(`${incidentId}:${plan.agent}:trace`, 32),
+      observationId: demoHex(`${incidentId}:${plan.agent}:observation`, 16),
+      provider: plan.provider,
+      model: plan.model,
+      promptVersion: plan.promptVersion,
+      inputSummary: plan.inputSummary,
+      outputSummary: plan.outputSummary,
+      tokens: plan.tokens,
+      cost: plan.cost,
+      startedAt,
+      finishedAt,
+      durationMs: plan.durationMs,
+      metadata: { demoSynthetic: true, completeStage: plan.completeStage },
+    });
+    observabilityKeys.add(idempotencyKey);
   }
 
   for (const plan of DEMO_AGENT_PLANS) {
@@ -444,6 +496,7 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
         tokens: plan.tokens,
         cost: plan.cost,
       });
+      await ensureObservability(runId, plan, startedAt, finishedAt);
     }
     upserted += 1;
   }

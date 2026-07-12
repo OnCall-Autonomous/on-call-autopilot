@@ -18,6 +18,9 @@
     "check": "npm run typecheck && npm test && npm run validate:skill"
   },
   "dependencies": {
+    "@langfuse/otel": "^5.9.1",
+    "@langfuse/tracing": "^5.9.1",
+    "@opentelemetry/sdk-node": "^0.220.0",
     "convex": "^1.25.4",
     "zod": "^3.25.76"
   },

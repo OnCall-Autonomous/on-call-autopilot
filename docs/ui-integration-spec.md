@@ -198,6 +198,7 @@ Primary hero-screen endpoint. Missing ID returns `400` with `{"error":"incidentI
     "incident": {},
     "project": {},
     "runs": [],
+    "steps": [],
     "events": [],
     "logs": [],
     "deployments": [],
@@ -208,7 +209,7 @@ Primary hero-screen endpoint. Missing ID returns `400` with `{"error":"incidentI
 }
 ```
 
-UI mapping: `incident` → header/status; `project` → repo/service links; `runs` → agent tree; `events` → timeline; `logs` → service log panel; `deployments`, `verifications`, `performance` → proof panel; `approvals` → action/history panel.
+UI mapping: `incident` → header/status; `project` → repo/service links; `runs` → agent tree; `steps` → workflow-step status and costing; `events` → timeline; `logs` → service log panel; `deployments`, `verifications`, `performance` → proof panel; `approvals` → action/history panel.
 
 ### `GET /api/overview?projectId=`
 
@@ -288,6 +289,15 @@ export interface AgentRun extends ConvexSystemFields {
   rejectionReason?: string;
 }
 
+export interface WorkflowStep extends ConvexSystemFields {
+  incidentId: ConvexId; runId?: ConvexId;
+  type: "PLAN" | "DIAGNOSE" | "PATCH" | "DEPLOY" | "VERIFY" | "PERFORMANCE" | "REPORT" | "SELECT_ASSIGNEE" | "ROLLBACK" | "ESCALATE";
+  status: "scheduled" | "running" | "succeeded" | "failed" | "cancelled";
+  attempt: number; idempotencyKey: string; inputSummary?: string; outputSummary?: string;
+  scheduledAt: TimestampMs; startedAt?: TimestampMs; finishedAt?: TimestampMs; timeoutMs: number;
+  tokens?: number; cost?: number; durationMs?: number; errorCode?: string;
+}
+
 export interface IncidentEvent extends ConvexSystemFields {
   incidentId: ConvexId; runId?: ConvexId; type: string; tool?: string;
   status: string; timestamp: TimestampMs; metadata: Record<string, unknown>;
@@ -324,7 +334,7 @@ export interface ModelProfile extends ConvexSystemFields {
 }
 
 export interface IncidentDetail {
-  incident: Incident; project: Project | null; runs: AgentRun[]; events: IncidentEvent[];
+  incident: Incident; project: Project | null; runs: AgentRun[]; steps: WorkflowStep[]; events: IncidentEvent[];
   deployments: Deployment[]; verifications: Verification[];
   performance: PerformanceRecord[]; approvals: Approval[];
 }
@@ -438,7 +448,8 @@ await fetch(`${API_URL}/api/approvals`, {
 - Parent/child agent-run relationships.
 - Idempotent scheduling of workflow steps and agent runs.
 - Append-only `WORKFLOW_STEP` and `AGENT_RUN` lifecycle events.
-- Token, cost, duration, model, provider, prompt-version, error-code, and rejection-reason storage.
+- Step-level token, cost, and duration storage.
+- Run-level token, cost, duration, model, provider, prompt-version, error-code, and rejection-reason storage.
 - Active-agent and per-incident agent-run Convex queries.
 - Verification and performance tables plus deterministic resolution gates.
 - Eight seeded evaluation definitions.

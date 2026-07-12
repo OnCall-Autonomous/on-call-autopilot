@@ -14,6 +14,14 @@ const stepType = v.union(
   v.literal("ESCALATE"),
 );
 
+function costMetadata(args: { tokens?: number; cost?: number; durationMs?: number }) {
+  return {
+    ...(args.tokens !== undefined ? { tokens: args.tokens } : {}),
+    ...(args.cost !== undefined ? { cost: args.cost } : {}),
+    ...(args.durationMs !== undefined ? { durationMs: args.durationMs } : {}),
+  };
+}
+
 export const schedule = internalMutation({
   args: {
     incidentId: v.id("incidents"),
@@ -80,15 +88,24 @@ export const start = internalMutation({
 });
 
 export const succeed = internalMutation({
-  args: { stepId: v.id("workflowSteps"), outputSummary: v.optional(v.string()) },
+  args: {
+    stepId: v.id("workflowSteps"),
+    outputSummary: v.optional(v.string()),
+    tokens: v.optional(v.number()),
+    cost: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
     const step = await ctx.db.get("workflowSteps", args.stepId);
     if (!step) throw new Error("WORKFLOW_STEP_NOT_FOUND");
-    if (step.status !== "running") throw new Error("WORKFLOW_STEP_NOT_RUNNING");
+    if (step.status !== "running" || step.startedAt === undefined) throw new Error("WORKFLOW_STEP_NOT_RUNNING");
     const finishedAt = Date.now();
+    const durationMs = finishedAt - step.startedAt;
     await ctx.db.patch("workflowSteps", step._id, {
       status: "succeeded",
       outputSummary: args.outputSummary,
+      tokens: args.tokens,
+      cost: args.cost,
+      durationMs,
       finishedAt,
     });
     await ctx.db.insert("events", {
@@ -97,7 +114,12 @@ export const succeed = internalMutation({
       type: "WORKFLOW_STEP",
       status: "succeeded",
       timestamp: finishedAt,
-      metadata: { stepId: step._id, stepType: step.type, attempt: step.attempt },
+      metadata: {
+        stepId: step._id,
+        stepType: step.type,
+        attempt: step.attempt,
+        ...costMetadata({ tokens: args.tokens, cost: args.cost, durationMs }),
+      },
     });
     return step._id;
   },
@@ -108,16 +130,22 @@ export const fail = internalMutation({
     stepId: v.id("workflowSteps"),
     errorCode: v.string(),
     outputSummary: v.optional(v.string()),
+    tokens: v.optional(v.number()),
+    cost: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const step = await ctx.db.get("workflowSteps", args.stepId);
     if (!step) throw new Error("WORKFLOW_STEP_NOT_FOUND");
-    if (step.status !== "running") throw new Error("WORKFLOW_STEP_NOT_RUNNING");
+    if (step.status !== "running" || step.startedAt === undefined) throw new Error("WORKFLOW_STEP_NOT_RUNNING");
     const finishedAt = Date.now();
+    const durationMs = finishedAt - step.startedAt;
     await ctx.db.patch("workflowSteps", step._id, {
       status: "failed",
       errorCode: args.errorCode,
       outputSummary: args.outputSummary,
+      tokens: args.tokens,
+      cost: args.cost,
+      durationMs,
       finishedAt,
     });
     await ctx.db.insert("events", {
@@ -126,7 +154,13 @@ export const fail = internalMutation({
       type: "WORKFLOW_STEP",
       status: "failed",
       timestamp: finishedAt,
-      metadata: { stepId: step._id, stepType: step.type, attempt: step.attempt, errorCode: args.errorCode },
+      metadata: {
+        stepId: step._id,
+        stepType: step.type,
+        attempt: step.attempt,
+        errorCode: args.errorCode,
+        ...costMetadata({ tokens: args.tokens, cost: args.cost, durationMs }),
+      },
     });
     return step._id;
   },

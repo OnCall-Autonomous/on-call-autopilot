@@ -2,7 +2,7 @@
 // @vitest-environment edge-runtime
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -115,5 +115,68 @@ describe("dashboard detail", () => {
       cost: 0.034,
     });
     expect(detail?.events.filter((event) => event.type === "AGENT_RUN" && event.status === "succeeded")).toHaveLength(7);
+  });
+
+  it("includes workflow steps with costing for the incident detail UI", async () => {
+    const t = convexTest(schema, modules);
+    const incidentId = await createIncidentWithLogs(t);
+    const stepId = await t.mutation(internal.workflowSteps.schedule, {
+      incidentId,
+      type: "DIAGNOSE",
+      idempotencyKey: `${incidentId}:diagnose:detail`,
+      timeoutMs: 30_000,
+    });
+    await t.mutation(internal.workflowSteps.start, { stepId });
+    await t.mutation(internal.workflowSteps.succeed, {
+      stepId,
+      outputSummary: "Diagnosis accepted",
+      tokens: 2840,
+      cost: 0.034,
+    });
+
+    const detail = await t.query(api.dashboard.incidentDetail, { incidentId });
+
+    expect(detail?.steps).toHaveLength(1);
+    expect(detail?.steps[0]).toMatchObject({
+      _id: stepId,
+      type: "DIAGNOSE",
+      status: "succeeded",
+      tokens: 2840,
+      cost: 0.034,
+    });
+  });
+
+  it("includes Langfuse/local observability records for the incident detail UI", async () => {
+    const t = convexTest(schema, modules);
+    const incidentId = await createIncidentWithLogs(t);
+
+    await t.mutation(api.observability.record, {
+      incidentId,
+      source: "langfuse",
+      kind: "generation",
+      name: "diagnose.openai",
+      status: "succeeded",
+      idempotencyKey: `${incidentId}:observability:diagnose`,
+      traceId: "0123456789abcdef0123456789abcdef",
+      observationId: "0123456789abcdef",
+      provider: "openai",
+      model: "gpt-4o",
+      inputSummary: "Diagnose checkout 5xx",
+      outputSummary: "Found pricing.cost mismatch",
+      tokens: 812,
+      startedAt: Date.now(),
+      finishedAt: Date.now() + 250,
+      metadata: { promptVersion: "diagnoser-v1" },
+    });
+
+    const detail = await t.query(api.dashboard.incidentDetail, { incidentId });
+
+    expect(detail?.observability).toHaveLength(1);
+    expect(detail?.observability[0]).toMatchObject({
+      source: "langfuse",
+      kind: "generation",
+      status: "succeeded",
+      traceId: "0123456789abcdef0123456789abcdef",
+    });
   });
 });
