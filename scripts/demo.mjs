@@ -43,14 +43,32 @@ const CHECKOUT_PAYLOAD = { items: [{ id: "sku_1", qty: 2 }], userId: "u_123" };
 const convex = new ConvexHttpClient(CONVEX_URL);
 const t0 = Date.now();
 
+// Once an incident exists, every log() line is also persisted as a TIMELINE
+// event so the Convex timeline mirrors this terminal output 1:1. Break-phase
+// lines (before an incident exists) stay terminal-only — there is no incident
+// to attach them to yet.
+let activeIncidentId = null;
+const pendingEvents = [];
+
 function must(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required in .env.local`);
   return value;
 }
 function log(step, msg) {
-  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  const elapsedMs = Date.now() - t0;
+  const secs = (elapsedMs / 1000).toFixed(1);
   console.log(`[+${secs.padStart(5)}s] ${step.padEnd(12)} ${msg}`);
+  if (activeIncidentId) {
+    pendingEvents.push(
+      convex
+        .mutation(api.events.append, { incidentId: activeIncidentId, step, message: msg, elapsedMs })
+        .catch((e) => console.error(`  (timeline persist failed: ${e.message || e})`)),
+    );
+  }
+}
+async function flushEvents() {
+  if (pendingEvents.length) await Promise.all(pendingEvents.splice(0));
 }
 
 // ---- GitHub gateway ---------------------------------------------------------
@@ -231,6 +249,7 @@ async function recover() {
     configuredMode: "AUTO_RESOLVE",
     idempotencyKey: `demo-${t0}`,
   });
+  activeIncidentId = incidentId;
   log("incident", `${incidentId} created (AUTO_RESOLVE)`);
 
   // 2. Diagnose (LLM proposes patch; verify gate is the real proof)
@@ -335,7 +354,9 @@ try {
     await breakProd();
     await recover();
   } else throw new Error(`unknown command: ${cmd}`);
+  await flushEvents();
 } catch (err) {
   console.error(`\n❌ ${err.message || err}`);
+  await flushEvents();
   process.exit(1);
 }

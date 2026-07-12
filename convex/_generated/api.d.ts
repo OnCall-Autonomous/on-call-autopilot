@@ -12,6 +12,7 @@ import type * as agentRuns from "../agentRuns.js";
 import type * as agentWorker from "../agentWorker.js";
 import type * as approvals from "../approvals.js";
 import type * as dashboard from "../dashboard.js";
+import type * as events from "../events.js";
 import type * as evidence from "../evidence.js";
 import type * as http from "../http.js";
 import type * as incidents from "../incidents.js";
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   agentWorker: typeof agentWorker;
   approvals: typeof approvals;
   dashboard: typeof dashboard;
+  events: typeof events;
   evidence: typeof evidence;
   http: typeof http;
   incidents: typeof incidents;
