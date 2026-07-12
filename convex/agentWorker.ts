@@ -65,6 +65,29 @@ export const complete = mutation({
   },
 });
 
+export const revoke = mutation({
+  args: {
+    token: v.string(), workerId: v.string(), runId: v.id("agentRuns"),
+    outputSummary: v.string(), durationMs: v.number(),
+  },
+  handler: async (ctx, args) => {
+    authorize(args.token);
+    const run = await ctx.db.get("agentRuns", args.runId);
+    if (!run || run.status !== "running" || run.workerId !== args.workerId) throw new Error("WORKER_LEASE_NOT_OWNED");
+    const finishedAt = Date.now();
+    const errorCode = "AGENT_RUN_TIMEOUT";
+    await ctx.db.patch("agentRuns", run._id, {
+      status: "failed", errorCode, outputSummary: args.outputSummary.slice(0, 8_000),
+      durationMs: args.durationMs, finishedAt, leaseExpiresAt: undefined,
+    });
+    await ctx.db.insert("events", {
+      incidentId: run.incidentId, runId: run._id, type: "AGENT_RUN", status: "revoked", timestamp: finishedAt,
+      metadata: { agent: run.agent, workerId: args.workerId, durationMs: args.durationMs, errorCode },
+    });
+    return true;
+  },
+});
+
 export const fail = mutation({
   args: {
     token: v.string(), workerId: v.string(), runId: v.id("agentRuns"), errorCode: v.string(),

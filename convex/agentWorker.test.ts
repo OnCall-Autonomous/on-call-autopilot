@@ -2,7 +2,7 @@
 // @vitest-environment edge-runtime
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -65,5 +65,31 @@ describe("agent worker gateway", () => {
     });
     const run = await t.run((ctx) => ctx.db.get("agentRuns", runId));
     expect(run).toMatchObject({ status: "succeeded", outputSummary: "Root cause identified", durationMs: 42 });
+  });
+
+  it("revokes an over-time run and records the partial-work summary", async () => {
+    process.env.AGENT_WORKER_TOKEN = "test-worker-token";
+    const t = convexTest(schema, modules);
+    const runId = await createQueuedRun(t);
+    await t.mutation(api.agentWorker.claimNext, { token: "test-worker-token", workerId: "worker-1" });
+
+    await t.mutation(api.agentWorker.revoke, {
+      token: "test-worker-token", workerId: "worker-1", runId,
+      durationMs: 20 * 60_000,
+      outputSummary: "Unable to complete within 20 minutes. Partial work:\nInspected logs and isolated checkout failure.",
+    });
+
+    const run = await t.run((ctx) => ctx.db.get("agentRuns", runId));
+    expect(run).toMatchObject({
+      status: "failed", errorCode: "AGENT_RUN_TIMEOUT", durationMs: 20 * 60_000,
+      outputSummary: "Unable to complete within 20 minutes. Partial work:\nInspected logs and isolated checkout failure.",
+    });
+    const events = await t.run((ctx) =>
+      ctx.db.query("events").withIndex("by_incident_time", (q) => q.eq("incidentId", run!.incidentId)).collect(),
+    );
+    expect(events.at(-1)).toMatchObject({
+      runId, type: "AGENT_RUN", status: "revoked",
+      metadata: { errorCode: "AGENT_RUN_TIMEOUT", durationMs: 20 * 60_000 },
+    });
   });
 });

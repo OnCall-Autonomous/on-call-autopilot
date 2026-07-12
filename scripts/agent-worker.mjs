@@ -7,10 +7,12 @@ const convexUrl = process.env.CONVEX_URL;
 const token = process.env.AGENT_WORKER_TOKEN;
 const profile = process.env.HERMES_PROFILE || "on-call-autopilot";
 const pollMs = Number(process.env.AGENT_WORKER_POLL_MS || 2000);
+const runTimeoutMs = Number(process.env.AGENT_RUN_TIMEOUT_MS || 20 * 60_000);
 const once = process.env.AGENT_WORKER_ONCE === "1";
 
 if (!convexUrl) throw new Error("CONVEX_URL is required in .env.local");
 if (!token) throw new Error("AGENT_WORKER_TOKEN is required in .env.local and Convex");
+if (!Number.isFinite(runTimeoutMs) || runTimeoutMs <= 0) throw new Error("AGENT_RUN_TIMEOUT_MS must be positive");
 
 const client = new ConvexHttpClient(convexUrl);
 const workerId = `local-${process.pid}-${randomUUID().slice(0, 8)}`;
@@ -40,11 +42,29 @@ function runHermes(run) {
     ], { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    }, runTimeoutMs);
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timeout);
       const durationMs = Date.now() - started;
+      if (timedOut) {
+        const partial = stdout.trim() || "No partial result was returned before timeout.";
+        reject(Object.assign(new Error("Agent run exceeded the 20 minute limit"), {
+          durationMs, timedOut: true,
+          output: `Unable to complete within 20 minutes. Partial work:\n${partial}`,
+        }));
+        return;
+      }
       if (code === 0 && stdout.trim()) resolve({ output: stdout.trim(), durationMs });
       else reject(Object.assign(new Error(stderr.trim() || `Hermes exited with code ${code}`), { durationMs }));
     });
@@ -66,17 +86,24 @@ async function processRun(run) {
     console.log(`[agent-worker] completed ${run._id} in ${result.durationMs}ms`);
   } catch (error) {
     const durationMs = Number(error.durationMs || 0);
-    await client.mutation(api.agentWorker.fail, {
-      token, workerId, runId: run._id, errorCode: "HERMES_EXECUTION_FAILED",
-      outputSummary: String(error.message || error).slice(0, 8_000), durationMs,
-    });
+    if (error.timedOut) {
+      await client.mutation(api.agentWorker.revoke, {
+        token, workerId, runId: run._id,
+        outputSummary: String(error.output).slice(0, 8_000), durationMs,
+      });
+    } else {
+      await client.mutation(api.agentWorker.fail, {
+        token, workerId, runId: run._id, errorCode: "HERMES_EXECUTION_FAILED",
+        outputSummary: String(error.message || error).slice(0, 8_000), durationMs,
+      });
+    }
     console.error(`[agent-worker] failed ${run._id}: ${error.message || error}`);
   } finally {
     clearInterval(heartbeat);
   }
 }
 
-console.log(`[agent-worker] started ${workerId}; polling ${convexUrl}`);
+console.log(`[agent-worker] started ${workerId}; polling ${convexUrl}; timeout ${runTimeoutMs}ms`);
 do {
   const run = await client.mutation(api.agentWorker.claimNext, { token, workerId });
   if (run) await processRun(run);
