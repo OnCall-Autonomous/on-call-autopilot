@@ -18,6 +18,7 @@ import type * as models from "../models.js";
 import type * as projects from "../projects.js";
 import type * as seed from "../seed.js";
 import type * as transitions from "../transitions.js";
+import type * as workflowSteps from "../workflowSteps.js";
 
 import type {
   ApiFromModules,
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   projects: typeof projects;
   seed: typeof seed;
   transitions: typeof transitions;
+  workflowSteps: typeof workflowSteps;
 }>;
 
 /**
