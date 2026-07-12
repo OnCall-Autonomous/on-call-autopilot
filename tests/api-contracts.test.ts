@@ -31,6 +31,14 @@ describe("UI API contracts", () => {
     expect(publicErrorMessage(new Error("INVALID_PROJECT"))).toBe("INVALID_PROJECT");
     expect(publicErrorMessage("invalid error value")).toBe("INVALID_REQUEST");
   });
+
+  it("does not expose unexpected internal errors", () => {
+    const internal = "provider secret at ../convex/incidents.ts:7:18";
+    const message = publicErrorMessage(new Error(internal));
+    expect(message).toBe("INVALID_REQUEST");
+    expect(message).not.toContain("provider secret");
+    expect(message).not.toContain("convex/incidents.ts");
+  });
 });
 
 describe("model profiles", () => {

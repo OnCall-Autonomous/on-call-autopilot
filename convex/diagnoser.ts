@@ -6,7 +6,17 @@ import { diagnosisOutput, type DiagnosisOutput } from "../src/orchestrator/contr
 export type Diagnosis = DiagnosisOutput;
 type Envelope={choices?:Array<{message?:{content?:unknown}}> ;usage?:{total_tokens?:unknown;cost?:unknown;cost_usd?:unknown}};
 
-export const configuration=internalQuery({args:{incidentId:v.id("incidents")},handler:async(ctx,{incidentId})=>{const incident=await ctx.db.get(incidentId);if(!incident)return null;const [profile,project,events,logs]=await Promise.all([ctx.db.query("modelProfiles").withIndex("by_agent",q=>q.eq("agent","DIAGNOSER")).unique(),ctx.db.get(incident.projectId),ctx.db.query("events").withIndex("by_incident_time",q=>q.eq("incidentId",incidentId)).order("desc").take(20),ctx.db.query("logs").withIndex("by_project_time",q=>q.eq("projectId",incident.projectId)).order("desc").take(20)]);return {profile:profile?.enabled&&profile.kind==="llm"?profile:null,context:{incident:{service:incident.service,severity:incident.severity,mode:incident.effectiveMode,status:incident.status},project:project?{name:project.name,owner:project.owner,repo:project.repo,defaultBranch:project.defaultBranch}:null,events:events.map(e=>({type:e.type,status:e.status,timestamp:e.timestamp})),logs:logs.map(l=>({timestamp:l.timestamp,endpoint:l.endpoint,method:l.method,status:l.status,latency:l.latency,error:l.error,requestId:l.requestId,version:l.version}))}};}});
+const MAX_LOG_ERROR_LENGTH=500;
+function redactLogError(value:string|undefined){
+  if(!value)return value;
+  return value
+    .replace(/\bBearer\s+[^\s,;]+/gi,"Bearer [REDACTED]")
+    .replace(/([?&](?:api_?key|token|secret|password)=)[^&\s]+/gi,"$1[REDACTED]")
+    .replace(/\b(?:api_?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,"credential=[REDACTED]")
+    .slice(0,MAX_LOG_ERROR_LENGTH);
+}
+
+export const configuration=internalQuery({args:{incidentId:v.id("incidents")},handler:async(ctx,{incidentId})=>{const incident=await ctx.db.get(incidentId);if(!incident)return null;const [profile,project,events,logs]=await Promise.all([ctx.db.query("modelProfiles").withIndex("by_agent",q=>q.eq("agent","DIAGNOSER")).unique(),ctx.db.get(incident.projectId),ctx.db.query("events").withIndex("by_incident_time",q=>q.eq("incidentId",incidentId)).order("desc").take(20),ctx.db.query("logs").withIndex("by_project_time",q=>q.eq("projectId",incident.projectId)).order("desc").take(20)]);return {profile:profile?.enabled&&profile.kind==="llm"?profile:null,context:{incident:{service:incident.service,severity:incident.severity,mode:incident.effectiveMode,status:incident.status},project:project?{name:project.name,owner:project.owner,repo:project.repo,defaultBranch:project.defaultBranch}:null,events:events.map(e=>({type:e.type,status:e.status,timestamp:e.timestamp})),logs:logs.map(l=>({timestamp:l.timestamp,endpoint:l.endpoint,method:l.method,status:l.status,latency:l.latency,error:redactLogError(l.error),requestId:l.requestId,version:l.version}))}};}});
 
 function category(error:unknown){if(error instanceof SyntaxError)return "MALFORMED_MODEL_JSON";const message=error instanceof Error?error.message:"";if(message==="MODEL_CONFIGURATION_UNAVAILABLE")return message;if(message==="MODEL_HTTP_FAILURE")return message;if(message==="INVALID_MODEL_ENVELOPE")return message;return "INVALID_DIAGNOSIS";}
 
