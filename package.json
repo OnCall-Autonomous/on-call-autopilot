@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval": "vitest run tests/evals.test.ts",
+    "eval": "vitest run tests/evals.test.ts tests/evaluation-runner.test.ts",
     "validate:skill": "node scripts/validate-skill.mjs",
     "check": "npm run typecheck && npm test && npm run validate:skill"
   },
