@@ -1,10 +1,12 @@
 {
   "name": "on-call-autopilot",
   "version": "0.1.0",
+  "type": "module",
   "private": true,
   "description": "Backend-first autonomous incident recovery orchestrator guarding an external service.",
   "scripts": {
     "dev": "convex dev",
+    "agent:worker": "node --env-file=.env.local scripts/agent-worker.mjs",
     "deploy": "convex deploy",
     "seed": "convex run seed:defaults",
     "typecheck": "tsc --noEmit",

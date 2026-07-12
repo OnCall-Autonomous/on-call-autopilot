@@ -9,6 +9,7 @@
  */
 
 import type * as agentRuns from "../agentRuns.js";
+import type * as agentWorker from "../agentWorker.js";
 import type * as approvals from "../approvals.js";
 import type * as dashboard from "../dashboard.js";
 import type * as evidence from "../evidence.js";
@@ -29,6 +30,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agentRuns: typeof agentRuns;
+  agentWorker: typeof agentWorker;
   approvals: typeof approvals;
   dashboard: typeof dashboard;
   evidence: typeof evidence;
