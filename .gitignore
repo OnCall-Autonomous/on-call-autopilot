@@ -4,5 +4,6 @@ node_modules/
 .convex/
 dist/
 coverage/
+.verify/
 .DS_Store
 .omc/

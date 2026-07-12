@@ -19,6 +19,8 @@ import type * as logs from "../logs.js";
 import type * as modelRunStore from "../modelRunStore.js";
 import type * as modelRunner from "../modelRunner.js";
 import type * as models from "../models.js";
+import type * as orchestration from "../orchestration.js";
+import type * as diagnoser from "../diagnoser.js";
 import type * as projects from "../projects.js";
 import type * as seed from "../seed.js";
 import type * as transitions from "../transitions.js";
@@ -42,6 +44,8 @@ declare const fullApi: ApiFromModules<{
   modelRunStore: typeof modelRunStore;
   modelRunner: typeof modelRunner;
   models: typeof models;
+  orchestration: typeof orchestration;
+  diagnoser: typeof diagnoser;
   projects: typeof projects;
   seed: typeof seed;
   transitions: typeof transitions;

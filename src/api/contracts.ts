@@ -18,4 +18,10 @@ export const projectRequestSchema = z.object({
 export function parseCreateIncidentRequest(value:unknown){const x=createIncidentRequestSchema.parse(value);return {...x,source:"dashboard" as const,configuredMode:x.mode,idempotencyKey:x.idempotencyKey??crypto.randomUUID()}}
 export function parseApprovalRequest(value:unknown){return approvalRequestSchema.parse(value)}
 export function parseProjectRequest(value:unknown){return projectRequestSchema.parse(value)}
+const PUBLIC_REQUEST_ERRORS = new Set(["INVALID_PROJECT"]);
+export function publicErrorMessage(error:unknown){
+  const message=error instanceof Error?error.message:"INVALID_REQUEST";
+  if(message.includes("IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"))return "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT";
+  return PUBLIC_REQUEST_ERRORS.has(message)?message:"INVALID_REQUEST";
+}
 export function jsonResponse(body:unknown,status=200){return new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json","access-control-allow-origin":"*","access-control-allow-headers":"content-type, authorization","access-control-allow-methods":"GET, POST, OPTIONS"}})}
