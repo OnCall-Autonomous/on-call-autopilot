@@ -5,7 +5,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { assertTransition } from "../src/orchestrator/state-machine";
 import type { DiagnosisOutput } from "../src/orchestrator/contracts";
-import { diagnosisValidator } from "./diagnosis-contract";
+import { diagnosisValidator } from "./diagnosis_contract";
 
 type SuccessArgs={incidentId:Id<"incidents">;runId:Id<"agentRuns">;diagnosis:DiagnosisOutput;model:string;tokens?:number;cost?:number;durationMs?:number};
 const publicReasons=new Set(["MODEL_CONFIGURATION_UNAVAILABLE","MODEL_HTTP_FAILURE","INVALID_MODEL_ENVELOPE","MALFORMED_MODEL_JSON","INVALID_DIAGNOSIS"]);
