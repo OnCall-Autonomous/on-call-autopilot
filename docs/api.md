@@ -9,7 +9,7 @@ Convex serves these routes from the deployment's `.convex.site` URL. Responses a
 - `POST /api/projects` — create/update a project by repository name.
 - `GET /api/incidents?projectId=&limit=` — newest incidents, maximum 100.
 - `POST /api/incidents` — create an idempotent dashboard incident.
-- `GET /api/incidents/detail?incidentId=` — complete hero-screen aggregate: incident, project, agent tree, timeline, deployments, verification, performance, approvals.
+- `GET /api/incidents/detail?incidentId=` — complete hero-screen aggregate: incident, project, agent tree, timeline, service logs, deployments, verification, performance, approvals.
 - `GET /api/overview?projectId=` — project list, MTTR/success/active metrics, active incidents.
 - `GET /api/approvals` — pending deployment approvals.
 - `POST /api/approvals` — approve or reject a pending deployment.
@@ -65,6 +65,10 @@ Convex serves these routes from the deployment's `.convex.site` URL. Responses a
   "notes": "Reviewed the minimal patch"
 }
 ```
+
+## Incident detail logs
+
+`GET /api/incidents/detail?incidentId=` includes a bounded `logs` array for the incident's project and incident time window. Use it for the service-log panel next to the timeline. Rows contain `timestamp`, `endpoint`, `method`, `status`, `latency`, optional `error`, `requestId`, `version`, and `projectId`.
 
 ## Initial deployment
 

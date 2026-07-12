@@ -9,7 +9,9 @@ const optionalId = <TableName extends TableNames>(value: string | null): Id<Tabl
   value === null ? undefined : asId<TableName>(value);
 const http=httpRouter();
 const options=httpAction(async()=>jsonResponse({ok:true}));
-for(const path of ["/api/projects","/api/incidents","/api/incidents/detail","/api/approvals","/api/models","/api/overview"])http.route({path,method:"OPTIONS",handler:options});
+for(const path of ["/api/projects","/api/incidents","/api/incidents/detail","/api/approvals","/api/models","/api/overview","/logs"])http.route({path,method:"OPTIONS",handler:options});
+function finiteNumber(value:unknown,field:string){const n=Number(value);if(!Number.isFinite(n))throw new Error(`${field} must be a finite number`);return n}
+function requiredString(value:unknown,field:string){if(typeof value!=="string"||!value.trim())throw new Error(`${field} is required`);return value}
 http.route({path:"/api/health",method:"GET",handler:httpAction(async()=>jsonResponse({ok:true,service:"on-call-autopilot",timestamp:Date.now()}))});
 http.route({path:"/api/projects",method:"GET",handler:httpAction(async ctx=>jsonResponse({data:await ctx.runQuery(api.projects.list,{})}))});
 http.route({path:"/api/projects",method:"POST",handler:httpAction(async(ctx,req)=>{try{const body=parseProjectRequest(await req.json());const id=await ctx.runMutation(api.projects.upsert,body);return jsonResponse({data:{id}},201)}catch(error){return jsonResponse({error:error instanceof Error?error.message:"INVALID_REQUEST"},400)}})});
@@ -20,4 +22,7 @@ http.route({path:"/api/overview",method:"GET",handler:httpAction(async(ctx,req)=
 http.route({path:"/api/approvals",method:"GET",handler:httpAction(async ctx=>jsonResponse({data:await ctx.runQuery(api.approvals.pending,{})}))});
 http.route({path:"/api/approvals",method:"POST",handler:httpAction(async(ctx,req)=>{try{const raw=await req.json();const body=parseApprovalRequest(raw);const id=await ctx.runMutation(api.approvals.decide,{incidentId:raw.incidentId,...body});return jsonResponse({data:{id}})}catch(error){return jsonResponse({error:error instanceof Error?error.message:"INVALID_REQUEST"},400)}})});
 http.route({path:"/api/models",method:"GET",handler:httpAction(async ctx=>jsonResponse({data:await ctx.runQuery(api.models.list,{})}))});
+// Shared-logs inlet: the guarded app (checkout-demo) POSTs each LogRecord to `${CONVEX_LOGS_URL}/logs`.
+// A Cloudflare Worker can only speak plain HTTP, so this route bridges into the `logs.ingest` mutation.
+http.route({path:"/logs",method:"POST",handler:httpAction(async(ctx,req)=>{try{const r=await req.json();const projectId=typeof r.projectId==="string"&&r.projectId.trim()?asId<"projects">(r.projectId):undefined;const repo=typeof r.repo==="string"&&r.repo.trim()?r.repo:typeof r.projectRepo==="string"&&r.projectRepo.trim()?r.projectRepo:undefined;const error=typeof r.error==="string"&&r.error?r.error:undefined;await ctx.runMutation(api.logs.ingest,{timestamp:finiteNumber(r.timestamp,"timestamp"),endpoint:requiredString(r.endpoint,"endpoint"),method:requiredString(r.method,"method"),status:finiteNumber(r.status,"status"),latency:finiteNumber(r.latency,"latency"),requestId:requiredString(r.requestId,"requestId"),version:requiredString(r.version,"version"),...(error!==undefined?{error}:{}),...(projectId!==undefined?{projectId}:{}),...(repo!==undefined?{repo}:{})});return jsonResponse({ok:true},202)}catch(error){return jsonResponse({error:error instanceof Error?error.message:"INVALID_LOG"},400)}})});
 export default http;

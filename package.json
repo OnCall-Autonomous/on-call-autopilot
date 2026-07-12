@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "convex dev",
     "agent:worker": "node --env-file=.env.local scripts/agent-worker.mjs",
+    "commander": "node --env-file=.env.local scripts/commander.mjs",
     "deploy": "convex deploy",
     "seed": "convex run seed:defaults",
     "typecheck": "tsc --noEmit",

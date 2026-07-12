@@ -39,6 +39,10 @@ const GH = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const HANDLERS_PATH = "src/handlers.ts";
 const BUG_BRANCH = "bug/checkout-regression";
 const CHECKOUT_PAYLOAD = { items: [{ id: "sku_1", qty: 2 }], userId: "u_123" };
+// Hard wall-clock cap on a single recovery. On breach the incident is moved to
+// ESCALATED (never silently resolved) — recovery is only ever "done" via the
+// independent HTTP verify, so a timeout is an honest give-up, not a green.
+const DEADLINE_MS = Number(env.RECOVER_DEADLINE_MS || 20 * 60_000);
 
 const convex = new ConvexHttpClient(CONVEX_URL);
 const t0 = Date.now();
@@ -206,8 +210,24 @@ async function findProject() {
   if (!p) throw new Error("No project configured in Convex; run `npm run seed`.");
   return p;
 }
+// Tracks the incident's live status so the deadline handler knows a legal path
+// to ESCALATED (DETECTED cannot reach it directly; every recover phase can).
+let currentStatus = "DETECTED";
+let deadlineAt = Infinity;
 async function move(incidentId, to, metadata) {
   await convex.mutation(api.transitions.move, { incidentId, to, metadata });
+  currentStatus = to;
+}
+class DeadlineError extends Error {}
+function checkDeadline() {
+  if (Date.now() > deadlineAt) throw new DeadlineError("recovery exceeded deadline");
+}
+async function escalate(incidentId, reason) {
+  if (currentStatus === "RESOLVED" || currentStatus === "ESCALATED") return;
+  // DETECTED has no direct edge to ESCALATED; hop through DIAGNOSING first.
+  if (currentStatus === "DETECTED") await move(incidentId, "DIAGNOSING").catch(() => {});
+  await move(incidentId, "ESCALATED", { reason }).catch(() => {});
+  log("escalate", `⚠ ${reason} → ESCALATED (no green: independent verify never passed)`);
 }
 
 // ---- BREAK ------------------------------------------------------------------
@@ -248,11 +268,16 @@ async function recover() {
     severity: "SEV1",
     configuredMode: "AUTO_RESOLVE",
     idempotencyKey: `demo-${t0}`,
+    deadlineMs: DEADLINE_MS,
   });
   activeIncidentId = incidentId;
-  log("incident", `${incidentId} created (AUTO_RESOLVE)`);
+  currentStatus = "DETECTED";
+  deadlineAt = Date.now() + DEADLINE_MS;
+  log("incident", `${incidentId} created (AUTO_RESOLVE) · deadline ${(DEADLINE_MS / 60000).toFixed(0)}m`);
 
+  try {
   // 2. Diagnose (LLM proposes patch; verify gate is the real proof)
+  checkDeadline();
   await move(incidentId, "DIAGNOSING");
   const buggy = await getFile(HANDLERS_PATH, BASE_BRANCH);
   const types = await getFile("src/types.ts", BASE_BRANCH);
@@ -269,6 +294,7 @@ async function recover() {
   await move(incidentId, "DIAGNOSIS_REVIEW", { rootCause });
 
   // 3. Patch → PR
+  checkDeadline();
   await move(incidentId, "PATCHING");
   const fixBranch = `fix/checkout-regression-${t0}`;
   await createBranch(fixBranch, BASE_BRANCH);
@@ -279,6 +305,7 @@ async function recover() {
   await move(incidentId, "PATCH_REVIEW", { pullRequestUrl: pr.html_url, prNumber: pr.number });
 
   // 4. Merge + redeploy
+  checkDeadline();
   await move(incidentId, "DEPLOYING", { pullRequestUrl: pr.html_url });
   const merge = await mergePr(pr.number);
   log("merge", `PR #${pr.number} merged (${merge.sha.slice(0, 7)})`);
@@ -295,6 +322,7 @@ async function recover() {
   log("deploy", `deployed version ${versionId}`);
 
   // 5. Independent verification (the ONLY proof of recovery)
+  checkDeadline();
   await move(incidentId, "VERIFYING");
   const pass = await pollUntil((x) => x.status === 200 && x.body.status === "confirmed", { tries: 20, delayMs: 3000 });
   const assertions = { status200: pass.status === 200, confirmed: pass.body.status === "confirmed", hasOrderId: !!pass.body.orderId };
@@ -317,6 +345,7 @@ async function recover() {
   }
 
   // 6. Performance
+  checkDeadline();
   await move(incidentId, "PERF_CHECK");
   const samples = [];
   for (let i = 0; i < 5; i++) samples.push(await checkout());
@@ -339,9 +368,18 @@ async function recover() {
   log("perf", `p50 ${p50}ms p95 ${p95}ms success ${(successRate * 100).toFixed(0)}% (baseline p95 ${baseP95}ms)`);
 
   // 7. Resolve (gated by persisted verification + performance)
+  checkDeadline();
   await move(incidentId, "RESOLVED", { pullRequestUrl: pr.html_url });
   log("resolved", `incident ${incidentId} RESOLVED in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`\n✅ Recovered. PR: ${pr.html_url}`);
+  } catch (err) {
+    if (err instanceof DeadlineError) {
+      await escalate(incidentId, `20-minute recovery deadline exceeded`);
+      await flushEvents();
+      throw new Error("recovery deadline exceeded — incident ESCALATED");
+    }
+    throw err;
+  }
 }
 
 // ---- Entry ------------------------------------------------------------------

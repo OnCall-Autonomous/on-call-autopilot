@@ -199,6 +199,7 @@ Primary hero-screen endpoint. Missing ID returns `400` with `{"error":"incidentI
     "project": {},
     "runs": [],
     "events": [],
+    "logs": [],
     "deployments": [],
     "verifications": [],
     "performance": [],
@@ -207,7 +208,7 @@ Primary hero-screen endpoint. Missing ID returns `400` with `{"error":"incidentI
 }
 ```
 
-UI mapping: `incident` → header/status; `project` → repo/service links; `runs` → agent tree; `events` → timeline; `deployments`, `verifications`, `performance` → proof panel; `approvals` → action/history panel.
+UI mapping: `incident` → header/status; `project` → repo/service links; `runs` → agent tree; `events` → timeline; `logs` → service log panel; `deployments`, `verifications`, `performance` → proof panel; `approvals` → action/history panel.
 
 ### `GET /api/overview?projectId=`
 
