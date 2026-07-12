@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api.js";
 import { buildHermesInvocation } from "./agent-worker-command.mjs";
+import { executeWorkerRun } from "./agent-worker-execution.mjs";
+import { scanSkillSecurity } from "../src/tools/skill-security.ts";
 
 const convexUrl = process.env.CONVEX_URL;
 const token = process.env.AGENT_WORKER_TOKEN;
@@ -71,7 +73,11 @@ async function processRun(run) {
     );
   }, 30_000);
   try {
-    const result = await runHermes(run);
+    const result = await executeWorkerRun(run, {
+      runHermes,
+      scanSkillSecurity,
+      env: process.env,
+    });
     await client.mutation(api.agentWorker.complete, {
       token, workerId, runId: run._id, outputSummary: result.output.slice(0, 8_000), durationMs: result.durationMs,
     });
@@ -85,7 +91,7 @@ async function processRun(run) {
       });
     } else {
       await client.mutation(api.agentWorker.fail, {
-        token, workerId, runId: run._id, errorCode: "HERMES_EXECUTION_FAILED",
+        token, workerId, runId: run._id, errorCode: error.code || "HERMES_EXECUTION_FAILED",
         outputSummary: String(error.message || error).slice(0, 8_000), durationMs,
       });
     }
