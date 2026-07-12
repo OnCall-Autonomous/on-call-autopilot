@@ -1,0 +1,25 @@
+{
+  "name": "on-call-autopilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend-first autonomous incident recovery orchestrator guarding an external service.",
+  "scripts": {
+    "dev": "convex dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "eval": "vitest run tests/evals.test.ts",
+    "validate:skill": "node scripts/validate-skill.mjs",
+    "check": "npm run typecheck && npm test && npm run validate:skill"
+  },
+  "dependencies": {
+    "convex": "^1.25.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.3"
+  },
+  "engines": { "node": ">=20" }
+}

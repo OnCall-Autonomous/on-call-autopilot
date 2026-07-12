@@ -1,0 +1,6 @@
+import { z } from "zod";
+export const diagnosisOutput = z.object({rootCause:z.string().min(1),confidence:z.number().min(0).max(1),evidence:z.array(z.object({source:z.enum(["log","deployment","commit","code","runbook","research"]),summary:z.string(),ref:z.string()})).min(2),affectedSurfaces:z.array(z.string()),risk:z.enum(["low","medium","high"]),recommendedRepair:z.string(),requiredFiles:z.array(z.string()),dependencyChange:z.boolean(),migrationChange:z.boolean(),secretChange:z.boolean()});
+export const patchOutput = z.object({summary:z.string(),repo:z.string(),branch:z.string(),files:z.array(z.object({path:z.string(),added:z.number().int().nonnegative(),deleted:z.number().int().nonnegative()})),regressionTest:z.string(),commitSha:z.string().optional(),pullRequestUrl:z.string().url().optional()});
+export const verifierOutput = z.object({passed:z.boolean(),status:z.number().int(),latencyMs:z.number().nonnegative(),assertions:z.record(z.boolean()),freshLogsClean:z.boolean()});
+export const reporterOutput = z.object({prTitle:z.string(),prBody:z.string(),runbookSummary:z.string(),notificationSummary:z.string()});
+export type AgentName="COMMANDER"|"DIAGNOSER"|"FIXER"|"VERIFIER"|"PERFORMANCE"|"REPORTER"|"TEMP_SPECIALIST";
