@@ -6,4 +6,5 @@ export const create=mutation({args:{projectId:v.id("projects"),source:v.union(v.
  await ctx.db.insert("events",{incidentId:id,type:"STATE_TRANSITION",status:"DETECTED",timestamp:now,metadata:{source:args.source}}); return id;
 }});
 export const get=query({args:{incidentId:v.id("incidents")},handler:(ctx,args)=>ctx.db.get(args.incidentId)});
+export const list=query({args:{projectId:v.optional(v.id("projects")),limit:v.optional(v.number())},handler:async(ctx,args)=>{const rows=args.projectId?await ctx.db.query("incidents").withIndex("by_project_status",q=>q.eq("projectId",args.projectId!)).collect():await ctx.db.query("incidents").collect();return rows.sort((a,b)=>b.startedAt-a.startedAt).slice(0,args.limit??50)}});
 export const timeline=query({args:{incidentId:v.id("incidents")},handler:(ctx,args)=>ctx.db.query("events").withIndex("by_incident_time",q=>q.eq("incidentId",args.incidentId)).collect()});

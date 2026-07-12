@@ -5,6 +5,8 @@
   "description": "Backend-first autonomous incident recovery orchestrator guarding an external service.",
   "scripts": {
     "dev": "convex dev",
+    "deploy": "convex deploy",
+    "seed": "convex run seed:defaults",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -18,8 +20,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
+    "convex-test": "^0.0.54",
     "typescript": "^5.8.3",
     "vitest": "^3.2.3"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
