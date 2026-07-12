@@ -5,7 +5,7 @@
 ## Ownership and retention
 - `projects`: static guarded-service configuration and guardrails. Never store API tokens.
 - `incidents`: durable workflow aggregate, autonomy modes, attempt counters, budget/deadline, and terminal outcome.
-- `agentRuns`: trace tree nodes. `parentRunId` models Commander-to-specialist delegation.
+- `agentRuns`: durable trace-tree nodes with idempotent enqueue, parent-child delegation, queued/running/succeeded/failed/rejected verdicts, model/prompt identity, token/cost/duration metrics, and typed failure/rejection reasons. Every lifecycle transition emits an `AGENT_RUN` event.
 - `workflowSteps`: durable, idempotent orchestration steps with lifecycle timestamps, attempt, timeout, summaries, and typed failure code; scheduled/running rows are resumable after interruption.
 - `events`: append-only audit/timeline records; metadata must be redacted and size-bounded.
 - `deployments`: external deployment proof and preview/production URLs.

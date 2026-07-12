@@ -60,7 +60,7 @@ type IncidentStatus =
 type AgentName =
   | "COMMANDER" | "DIAGNOSER" | "FIXER" | "VERIFIER"
   | "PERFORMANCE" | "REPORTER" | "TEMP_SPECIALIST";
-type AgentRunStatus = "queued" | "running" | "succeeded" | "failed";
+type AgentRunStatus = "queued" | "running" | "succeeded" | "failed" | "rejected";
 type PerformanceVerdict = "PASS" | "REGRESSION" | "WAIVED";
 type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
 ```
@@ -244,10 +244,13 @@ export interface Incident extends ConvexSystemFields {
 }
 
 export interface AgentRun extends ConvexSystemFields {
-  incidentId: ConvexId; agent: AgentName | string; parentRunId?: ConvexId;
-  status: AgentRunStatus; inputSummary: string; outputSummary?: string; model?: string;
-  tokens?: number; cost?: number; durationMs?: number; startedAt: TimestampMs;
-  finishedAt?: TimestampMs;
+  incidentId: ConvexId; agent: AgentName; parentRunId?: ConvexId;
+  status: "queued" | "running" | "succeeded" | "failed" | "rejected";
+  idempotencyKey: string; inputSummary: string; outputSummary?: string;
+  provider?: string; model?: string; promptVersion: string;
+  tokens?: number; cost?: number; durationMs?: number; queuedAt: TimestampMs;
+  startedAt?: TimestampMs; finishedAt?: TimestampMs; errorCode?: string;
+  rejectionReason?: string;
 }
 
 export interface IncidentEvent extends ConvexSystemFields {
