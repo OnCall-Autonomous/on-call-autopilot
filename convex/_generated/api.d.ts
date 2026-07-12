@@ -16,6 +16,8 @@ import type * as evidence from "../evidence.js";
 import type * as http from "../http.js";
 import type * as incidents from "../incidents.js";
 import type * as logs from "../logs.js";
+import type * as modelRunStore from "../modelRunStore.js";
+import type * as modelRunner from "../modelRunner.js";
 import type * as models from "../models.js";
 import type * as projects from "../projects.js";
 import type * as seed from "../seed.js";
@@ -37,6 +39,8 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   incidents: typeof incidents;
   logs: typeof logs;
+  modelRunStore: typeof modelRunStore;
+  modelRunner: typeof modelRunner;
   models: typeof models;
   projects: typeof projects;
   seed: typeof seed;

@@ -50,8 +50,8 @@ describe("agent run observability", () => {
       agent: "COMMANDER" as const,
       idempotencyKey: `${incidentId}:commander:1`,
       inputSummary: "Plan recovery",
-      provider: "openrouter",
-      model: "anthropic/claude-sonnet-4",
+      provider: "openai",
+      model: "gpt-4o-mini",
       promptVersion: "commander-v1",
     };
     const commanderId = await t.mutation(internal.agentRuns.enqueue, commanderArgs);
@@ -62,8 +62,8 @@ describe("agent run observability", () => {
       agent: "DIAGNOSER",
       idempotencyKey: `${incidentId}:diagnoser:1`,
       inputSummary: "Correlate logs and deployments",
-      provider: "openrouter",
-      model: "anthropic/claude-sonnet-4",
+      provider: "openai",
+      model: "gpt-4o-mini",
       promptVersion: "diagnoser-v1",
     });
 
@@ -81,8 +81,8 @@ describe("agent run observability", () => {
       agent: "DIAGNOSER",
       idempotencyKey: `${incidentId}:diagnoser:lifecycle`,
       inputSummary: "Diagnose checkout",
-      provider: "openrouter",
-      model: "anthropic/claude-sonnet-4",
+      provider: "openai",
+      model: "gpt-4o-mini",
       promptVersion: "diagnoser-v1",
     });
     await t.mutation(internal.agentRuns.start, { runId });
