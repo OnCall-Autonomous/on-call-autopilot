@@ -61,6 +61,16 @@ type DemoAgentPlan = {
   offsetMs: number;
 };
 
+type DemoToolCallPlan = {
+  name: string;
+  command: string;
+  inputSummary: string;
+  outputSummary: string;
+  durationMs: number;
+  offsetMs: number;
+  metadata: Record<string, unknown>;
+};
+
 const OWNER = "OnCall-Autonomous";
 const REPO = "checkout-demo";
 const PROD = "https://checkout-demo.ashishsoni2002.workers.dev";
@@ -366,9 +376,161 @@ function stageForIncidentStatus(status: string, hasRootCause: boolean): DemoStag
   return hasRootCause ? "resolved" : "detected";
 }
 
+function eventMetadata(event: { metadata: unknown }): Record<string, unknown> {
+  return event.metadata && typeof event.metadata === "object" && !Array.isArray(event.metadata)
+    ? (event.metadata as Record<string, unknown>)
+    : {};
+}
+
+function toolPlansForAgent(
+  plan: DemoAgentPlan,
+  context: {
+    repo: string;
+    productionUrl: string;
+    cloudflareProject: string;
+    branch: string;
+    commitSha: string;
+    prNumber?: number;
+    prUrl?: string;
+    service: string;
+  },
+): DemoToolCallPlan[] {
+  const common = {
+    repository: context.repo,
+    service: context.service,
+    branch: context.branch,
+    commitSha: context.commitSha.slice(0, 12),
+  };
+  if (plan.agent === "DIAGNOSER") {
+    return [
+      {
+        name: "logs.query",
+        command: `convex run logs:listRecent --service ${context.service} --status 500`,
+        inputSummary: "Search recent failing production requests",
+        outputSummary: "Found repeated checkout 500s matching the incident fingerprint.",
+        durationMs: 900,
+        offsetMs: 1_200,
+        metadata: { ...common, toolProvider: "convex", rows: 3, exitCode: 0 },
+      },
+      {
+        name: "git.show",
+        command: `git show --stat ${context.commitSha.slice(0, 7)}`,
+        inputSummary: "Inspect the suspected code change",
+        outputSummary: "Confirmed the regression touched checkout total calculation.",
+        durationMs: 650,
+        offsetMs: 2_300,
+        metadata: { ...common, toolProvider: "git", filesChanged: 1, exitCode: 0 },
+      },
+    ];
+  }
+  if (plan.agent === "FIXER") {
+    return [
+      {
+        name: "git.diff",
+        command: `git diff -- src/${context.service}.ts`,
+        inputSummary: "Verify the minimal patch before opening a PR",
+        outputSummary: "Diff is limited to the failing checkout path.",
+        durationMs: 700,
+        offsetMs: 1_500,
+        metadata: { ...common, toolProvider: "git", filesChanged: 1, exitCode: 0 },
+      },
+      {
+        name: "github.pr.create",
+        command: `gh pr create --repo ${context.repo} --head ${context.branch} --base main --fill`,
+        inputSummary: "Open the guarded repair pull request",
+        outputSummary: `Opened PR ${context.prNumber ? `#${context.prNumber}` : ""} for the recovery patch.`.trim(),
+        durationMs: 1_300,
+        offsetMs: 3_100,
+        metadata: {
+          ...common,
+          toolProvider: "github",
+          prNumber: context.prNumber,
+          prUrl: context.prUrl,
+          exitCode: 0,
+        },
+      },
+      {
+        name: "github.pr.merge",
+        command: `gh pr merge ${context.prNumber ? context.prNumber : "--auto"} --repo ${context.repo} --squash`,
+        inputSummary: "Merge the approved guarded PR",
+        outputSummary: `Merged commit ${context.commitSha.slice(0, 7)} into main.`,
+        durationMs: 1_100,
+        offsetMs: 6_700,
+        metadata: {
+          ...common,
+          toolProvider: "github",
+          prNumber: context.prNumber,
+          prUrl: context.prUrl,
+          exitCode: 0,
+        },
+      },
+    ];
+  }
+  if (plan.agent === "VERIFIER") {
+    return [
+      {
+        name: "http.replay",
+        command: `curl -sS -X POST ${context.productionUrl}/api/checkout`,
+        inputSummary: "Replay the exact failing production request",
+        outputSummary: "Received 200 with a confirmed order id.",
+        durationMs: 820,
+        offsetMs: 900,
+        metadata: { ...common, toolProvider: "curl", method: "POST", endpoint: "/api/checkout", statusCode: 200, exitCode: 0 },
+      },
+      {
+        name: "logs.tail",
+        command: `wrangler tail ${context.cloudflareProject} --format=json --status=error`,
+        inputSummary: "Check fresh production logs after the fix",
+        outputSummary: "No new checkout errors appeared in the verification window.",
+        durationMs: 1_250,
+        offsetMs: 2_000,
+        metadata: { ...common, toolProvider: "cloudflare", errors: 0, exitCode: 0 },
+      },
+    ];
+  }
+  if (plan.agent === "PERFORMANCE") {
+    return [
+      {
+        name: "perf.smoke",
+        command: `npm run perf -- --url ${context.productionUrl}/api/checkout --samples 5`,
+        inputSummary: "Measure post-fix latency and success rate",
+        outputSummary: "Performance gate passed with 100% success.",
+        durationMs: 1_400,
+        offsetMs: 800,
+        metadata: { ...common, toolProvider: "npm", samples: 5, successRate: 1, exitCode: 0 },
+      },
+    ];
+  }
+  if (plan.agent === "REPORTER") {
+    return [
+      {
+        name: "github.pr.comment",
+        command: `gh pr comment ${context.prNumber ?? ""} --repo ${context.repo} --body-file recovery-summary.md`.trim(),
+        inputSummary: "Attach recovery proof to the PR",
+        outputSummary: "Posted diagnosis, deployment, verification, and performance evidence.",
+        durationMs: 850,
+        offsetMs: 900,
+        metadata: {
+          ...common,
+          toolProvider: "github",
+          prNumber: context.prNumber,
+          prUrl: context.prUrl,
+          exitCode: 0,
+        },
+      },
+    ];
+  }
+  return [];
+}
+
 async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, stage: DemoStage) {
   const incident = await ctx.db.get(incidentId);
   if (!incident) throw new Error("INCIDENT_NOT_FOUND");
+  const project = await ctx.db.get(incident.projectId);
+  const deployments = await ctx.db
+    .query("deployments")
+    .withIndex("by_incident", (q) => q.eq("incidentId", incidentId))
+    .take(10);
 
   const existingRuns = await ctx.db
     .query("agentRuns")
@@ -384,7 +546,23 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
     .take(100);
   const runsByKey = new Map(existingRuns.map((run) => [run.idempotencyKey, run]));
   const eventKeys = new Set(existingEvents.map((event) => `${event.runId ?? ""}:${event.status}`));
+  const toolEventKeys = new Set(
+    existingEvents
+      .filter((event) => event.type === "TOOL_CALL")
+      .map((event) => `${event.runId ?? ""}:${event.tool ?? ""}:${event.status}`),
+  );
   const observabilityKeys = new Set(existingObservability.map((record) => record.idempotencyKey));
+  const prEvent = existingEvents.find((event) => event.status === "PATCH_REVIEW");
+  const prMetadata = prEvent ? eventMetadata(prEvent) : {};
+  const prNumber = typeof prMetadata.prNumber === "number" ? prMetadata.prNumber : undefined;
+  const prUrl = typeof prMetadata.pullRequestUrl === "string" ? prMetadata.pullRequestUrl : undefined;
+  const deployment = deployments[0];
+  const repo = project?.repo ?? `${OWNER}/${REPO}`;
+  const productionUrl = project?.productionUrl ?? PROD;
+  const cloudflareProject = project?.cloudflareProject ?? REPO;
+  const branch = deployment?.branch ?? `fix/${incident.service}-autopilot-${String(incidentId).slice(-6)}`;
+  const commitSha = deployment?.commitSha ?? demoHex(`${incidentId}:commit`, 40);
+  const service = incident.service;
   let commanderRunId: Id<"agentRuns"> | undefined;
   let upserted = 0;
   let eventsInserted = 0;
@@ -443,6 +621,72 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
     observabilityKeys.add(idempotencyKey);
   }
 
+  async function ensureToolCalls(
+    runId: Id<"agentRuns">,
+    plan: DemoAgentPlan,
+    startedAt: number,
+  ) {
+    const toolPlans = toolPlansForAgent(plan, {
+      repo,
+      productionUrl,
+      cloudflareProject,
+      branch,
+      commitSha,
+      prNumber,
+      prUrl,
+      service,
+    });
+    for (const tool of toolPlans) {
+      const toolStartedAt = startedAt + tool.offsetMs;
+      const toolFinishedAt = toolStartedAt + tool.durationMs;
+      const idempotencyKey = `${incidentId}:demo-tool:${plan.agent}:${tool.name}`;
+      if (!observabilityKeys.has(idempotencyKey)) {
+        await ctx.db.insert("observabilityRecords", {
+          incidentId,
+          runId,
+          source: "local",
+          kind: "tool",
+          name: tool.name,
+          status: "succeeded",
+          idempotencyKey,
+          traceId: demoHex(`${incidentId}:${plan.agent}:${tool.name}:trace`, 32),
+          observationId: demoHex(`${incidentId}:${plan.agent}:${tool.name}:observation`, 16),
+          promptVersion: plan.promptVersion,
+          inputSummary: tool.inputSummary,
+          outputSummary: tool.outputSummary,
+          startedAt: toolStartedAt,
+          finishedAt: toolFinishedAt,
+          durationMs: tool.durationMs,
+          metadata: { ...tool.metadata, command: tool.command, agent: plan.agent, demoSynthetic: true },
+        });
+        observabilityKeys.add(idempotencyKey);
+      }
+
+      const eventKey = `${runId}:${tool.name}:succeeded`;
+      if (!toolEventKeys.has(eventKey)) {
+        await ctx.db.insert("events", {
+          incidentId,
+          runId,
+          type: "TOOL_CALL",
+          tool: tool.name,
+          status: "succeeded",
+          timestamp: toolFinishedAt,
+          metadata: {
+            ...tool.metadata,
+            command: tool.command,
+            inputSummary: tool.inputSummary,
+            outputSummary: tool.outputSummary,
+            durationMs: tool.durationMs,
+            agent: plan.agent,
+            demoSynthetic: true,
+          },
+        });
+        toolEventKeys.add(eventKey);
+        eventsInserted += 1;
+      }
+    }
+  }
+
   for (const plan of DEMO_AGENT_PLANS) {
     const idempotencyKey = `${incidentId}:demo-agent:${plan.agent}`;
     const targetStatus = statusForStage(plan, stage);
@@ -497,6 +741,7 @@ async function syncDemoAgentRuns(ctx: MutationCtx, incidentId: Id<"incidents">, 
         cost: plan.cost,
       });
       await ensureObservability(runId, plan, startedAt, finishedAt);
+      await ensureToolCalls(runId, plan, startedAt);
     }
     upserted += 1;
   }
