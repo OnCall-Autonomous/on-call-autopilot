@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api.js";
+import { buildHermesInvocation } from "./agent-worker-command.mjs";
 
 const convexUrl = process.env.CONVEX_URL;
 const token = process.env.AGENT_WORKER_TOKEN;
@@ -24,22 +25,13 @@ process.on("SIGTERM", () => { stopping = true; });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function runHermes(run) {
-  const prompt = [
-    `You are the ${run.agent} specialist for On-Call Autopilot.`,
-    `Incident ID: ${run.incidentId}`,
-    `Agent run ID: ${run._id}`,
-    `Task: ${run.inputSummary}`,
-    "Follow the on-call-autopilot-implementation skill and project HERMES.md.",
-    "Return a concise structured result. Never include credentials or authorization headers.",
-  ].join("\n");
+  const invocation = buildHermesInvocation(run, profile);
 
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn("hermes", [
-      "--profile", profile,
-      "--skills", "on-call-autopilot-implementation",
-      "chat", "--quiet", "--toolsets", "safe", "-q", prompt,
-    ], { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("hermes", invocation.args, {
+      cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
