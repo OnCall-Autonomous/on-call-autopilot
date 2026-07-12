@@ -34,7 +34,8 @@ export const schedule = internalMutation({
     if (!incident) throw new Error("INCIDENT_NOT_FOUND");
     if (args.timeoutMs <= 0) throw new Error("WORKFLOW_STEP_TIMEOUT_MUST_BE_POSITIVE");
 
-    return await ctx.db.insert("workflowSteps", {
+    const scheduledAt = Date.now();
+    const stepId = await ctx.db.insert("workflowSteps", {
       incidentId: args.incidentId,
       runId: args.runId,
       type: args.type,
@@ -42,9 +43,18 @@ export const schedule = internalMutation({
       attempt: 1,
       idempotencyKey: args.idempotencyKey,
       inputSummary: args.inputSummary,
-      scheduledAt: Date.now(),
+      scheduledAt,
       timeoutMs: args.timeoutMs,
     });
+    await ctx.db.insert("events", {
+      incidentId: args.incidentId,
+      runId: args.runId,
+      type: "WORKFLOW_STEP",
+      status: "scheduled",
+      timestamp: scheduledAt,
+      metadata: { stepId, stepType: args.type, attempt: 1, idempotencyKey: args.idempotencyKey },
+    });
+    return stepId;
   },
 });
 
@@ -55,7 +65,16 @@ export const start = internalMutation({
     if (!step) throw new Error("WORKFLOW_STEP_NOT_FOUND");
     if (step.status === "running") return step._id;
     if (step.status !== "scheduled") throw new Error("WORKFLOW_STEP_NOT_STARTABLE");
-    await ctx.db.patch("workflowSteps", step._id, { status: "running", startedAt: Date.now() });
+    const startedAt = Date.now();
+    await ctx.db.patch("workflowSteps", step._id, { status: "running", startedAt });
+    await ctx.db.insert("events", {
+      incidentId: step.incidentId,
+      runId: step.runId,
+      type: "WORKFLOW_STEP",
+      status: "running",
+      timestamp: startedAt,
+      metadata: { stepId: step._id, stepType: step.type, attempt: step.attempt },
+    });
     return step._id;
   },
 });
@@ -66,10 +85,19 @@ export const succeed = internalMutation({
     const step = await ctx.db.get("workflowSteps", args.stepId);
     if (!step) throw new Error("WORKFLOW_STEP_NOT_FOUND");
     if (step.status !== "running") throw new Error("WORKFLOW_STEP_NOT_RUNNING");
+    const finishedAt = Date.now();
     await ctx.db.patch("workflowSteps", step._id, {
       status: "succeeded",
       outputSummary: args.outputSummary,
-      finishedAt: Date.now(),
+      finishedAt,
+    });
+    await ctx.db.insert("events", {
+      incidentId: step.incidentId,
+      runId: step.runId,
+      type: "WORKFLOW_STEP",
+      status: "succeeded",
+      timestamp: finishedAt,
+      metadata: { stepId: step._id, stepType: step.type, attempt: step.attempt },
     });
     return step._id;
   },
@@ -85,11 +113,20 @@ export const fail = internalMutation({
     const step = await ctx.db.get("workflowSteps", args.stepId);
     if (!step) throw new Error("WORKFLOW_STEP_NOT_FOUND");
     if (step.status !== "running") throw new Error("WORKFLOW_STEP_NOT_RUNNING");
+    const finishedAt = Date.now();
     await ctx.db.patch("workflowSteps", step._id, {
       status: "failed",
       errorCode: args.errorCode,
       outputSummary: args.outputSummary,
-      finishedAt: Date.now(),
+      finishedAt,
+    });
+    await ctx.db.insert("events", {
+      incidentId: step.incidentId,
+      runId: step.runId,
+      type: "WORKFLOW_STEP",
+      status: "failed",
+      timestamp: finishedAt,
+      metadata: { stepId: step._id, stepType: step.type, attempt: step.attempt, errorCode: args.errorCode },
     });
     return step._id;
   },

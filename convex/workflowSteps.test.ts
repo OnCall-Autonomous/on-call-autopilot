@@ -80,10 +80,18 @@ describe("workflow step persistence", () => {
     await t.mutation(internal.workflowSteps.succeed, { stepId, outputSummary: "Diagnosis accepted" });
     const resumable = await t.query(api.workflowSteps.listResumable, { incidentId, limit: 20 });
     const steps = await t.query(api.workflowSteps.listByIncident, { incidentId, limit: 20 });
+    const events = await t.run(async (ctx) =>
+      ctx.db
+        .query("events")
+        .withIndex("by_incident_time", (q) => q.eq("incidentId", incidentId))
+        .collect(),
+    );
     expect(resumable).toEqual([]);
     expect(steps[0]).toMatchObject({ status: "succeeded", outputSummary: "Diagnosis accepted" });
     expect(steps[0].startedAt).toBeTypeOf("number");
     expect(steps[0].finishedAt).toBeTypeOf("number");
+    expect(events.map((event) => event.status)).toEqual(["scheduled", "running", "succeeded"]);
+    expect(events.every((event) => event.type === "WORKFLOW_STEP")).toBe(true);
   });
 
   it("persists a typed terminal failure", async () => {
