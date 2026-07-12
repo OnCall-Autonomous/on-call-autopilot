@@ -148,11 +148,19 @@ Returns newest incidents first. `projectId` is optional. `limit` defaults to 50 
 }
 ```
 
-`mode` defaults to `PR_APPROVAL`; `severity` defaults to `SEV2`; `idempotencyKey` is generated if omitted. Reusing the same idempotency key returns the existing incident. Response `201`:
+`mode` defaults to `PR_APPROVAL`; `severity` defaults to `SEV2`; `idempotencyKey` is generated if omitted. The idempotency key identifies one logical request: an exact replay must have the same `projectId`, source (`dashboard` for this HTTP route), `service`, `severity`, and configured mode. An exact replay returns the existing incident ID and creates no additional incident or initial `STATE_TRANSITION` event. Response `201` (for both first creation and exact replay):
 
 ```json
 {"data":{"id":"incident_id"}}
 ```
+
+Reusing the key when any compared value differs fails closed with response `400`; no incident or event is created:
+
+```json
+{"error":"IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"}
+```
+
+Generate a new key for each logically different request. Retrying a request after a lost or uncertain response must reuse both the original key and the original payload.
 
 ### `GET /api/incidents/detail?incidentId=`
 
