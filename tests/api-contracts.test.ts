@@ -23,8 +23,11 @@ describe("UI API contracts", () => {
 });
 
 describe("model profiles", () => {
-  it("assigns reasoning models only to LLM agents", () => {
-    expect(resolveModelProfile("DIAGNOSER", DEFAULT_MODEL_PROFILES).model).toBeTruthy();
+  it("enables LLMs only for read-only Commander and Diagnoser", () => {
+    expect(resolveModelProfile("COMMANDER", DEFAULT_MODEL_PROFILES)).toMatchObject({ kind: "llm", provider: "openai", model: "gpt-4o-mini" });
+    expect(resolveModelProfile("DIAGNOSER", DEFAULT_MODEL_PROFILES)).toMatchObject({ kind: "llm", provider: "openai", model: "gpt-4o-mini" });
+    expect(() => resolveModelProfile("FIXER", DEFAULT_MODEL_PROFILES)).toThrow("MODEL_PROFILE_NOT_CONFIGURED");
+    expect(resolveModelProfile("VERIFIER", DEFAULT_MODEL_PROFILES).kind).toBe("deterministic");
     expect(resolveModelProfile("PERFORMANCE", DEFAULT_MODEL_PROFILES).kind).toBe("deterministic");
   });
 

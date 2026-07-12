@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation, query } from "./_generated/server";
 
 const agentName = v.union(
@@ -64,6 +65,9 @@ export const enqueue = internalMutation({
         idempotencyKey: args.idempotencyKey,
       },
     });
+    if (args.agent === "COMMANDER" || args.agent === "DIAGNOSER") {
+      await ctx.scheduler.runAfter(0, internal.modelRunner.execute, { runId });
+    }
     return runId;
   },
 });

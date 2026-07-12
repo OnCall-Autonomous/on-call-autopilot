@@ -249,7 +249,7 @@ Possible errors: `INCIDENT_NOT_FOUND`, `INCIDENT_NOT_AWAITING_APPROVAL`, `PENDIN
 ### `GET /api/models`
 
 ```json
-{"data":[{"_id":"profile_id","agent":"DIAGNOSER","kind":"llm","provider":"openrouter","model":"anthropic/claude-sonnet-4","temperature":0,"maxTokens":5000,"promptVersion":"diagnoser-v1","enabled":true,"updatedAt":1783840000000},{"_id":"profile_id_2","agent":"PERFORMANCE","kind":"deterministic","promptVersion":"performance-v1","enabled":true,"updatedAt":1783840000000}]}
+{"data":[{"_id":"profile_id","agent":"DIAGNOSER","kind":"llm","provider":"openai","model":"gpt-4o-mini","temperature":0,"maxTokens":5000,"promptVersion":"diagnoser-v1","enabled":true,"updatedAt":1783840000000},{"_id":"profile_id_2","agent":"PERFORMANCE","kind":"deterministic","promptVersion":"performance-v1","enabled":true,"updatedAt":1783840000000}]}
 ```
 
 Do not assume all agents use LLMs. Verifier and Performance are deterministic.
@@ -445,7 +445,7 @@ await fetch(`${API_URL}/api/approvals`, {
 ### Not implemented yet
 
 - Commander scheduler that automatically creates workflow steps and agent runs after incident creation.
-- Live OpenRouter model calls and prompt execution.
+- Live OpenAI model calls and prompt execution.
 - Real Diagnoser evidence collection.
 - GitHub read/write gateway, PR creation, and patch execution.
 - Cloudflare deployment and rollback gateway.
@@ -841,7 +841,7 @@ Show only verified runbooks. Include symptoms, signature, root cause, fix, verif
 
 ### Integrations
 
-Cards for Convex, GitHub, Cloudflare, OpenRouter, Telegram, ElevenLabs, Linkup, and Analytics. Each card has `Connected`, `Missing configuration`, `Error`, or `Not implemented`. Never expose secret values; display only presence and last successful check.
+Cards for Convex, GitHub, Cloudflare, OpenAI, Telegram, ElevenLabs, Linkup, and Analytics. Each card has `Connected`, `Missing configuration`, `Error`, or `Not implemented`. Never expose secret values; display only presence and last successful check.
 
 ---
 
@@ -1030,7 +1030,7 @@ No backend secret values are currently configured in development or production C
 ### Backend-only variables — never prefix with `NEXT_PUBLIC_` or expose to the browser
 
 ```env
-OPENROUTER_API_KEY=
+OPENAI_API_KEY=
 GITHUB_TOKEN=
 GITHUB_OWNER=OnCall-Autonomous
 GITHUB_REPO=

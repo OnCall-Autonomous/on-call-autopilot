@@ -22,7 +22,18 @@ npm run check
 ```
 Convex generates `convex/_generated` during `convex dev`. Configure a project before running live mutations.
 
-## Structure
+## Read-only model integration
+
+Commander and Diagnoser use OpenAI structured outputs through the Convex model runner. Their responses are validated with Zod before persistence. Verifier and Performance remain deterministic, and Fixer/Reporter/Temporary Specialist model profiles are disabled for this phase.
+
+Required Convex environment variables:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL_COMMANDER` (defaults to `gpt-4o-mini` through the seeded profile)
+- `OPENAI_MODEL_DIAGNOSER` (defaults to `gpt-4o-mini` through the seeded profile)
+
+Model runs persist provider, actual routed model, prompt version, bounded input/output summaries, total tokens, cost, latency, and a stable error code on failure. Secrets and raw authorization headers are never persisted.
+
 - `convex/`: persistent model and server functions.
 - `src/orchestrator/`: state machine, agent output contracts, Commander decisions.
 - `src/policy/`: deterministic autonomy and patch guard.
