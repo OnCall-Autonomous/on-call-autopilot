@@ -351,3 +351,38 @@ export const seedIncidents = mutation({
     return { seeded: created.length, logsSeeded, incidents: created };
   },
 });
+
+export const backfillRootCauses = mutation({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(args.limit ?? 100, 1), 200);
+    const incidents = await ctx.db.query("incidents").order("desc").take(limit);
+    let updated = 0;
+    const incidentIds: Id<"incidents">[] = [];
+
+    for (const incident of incidents) {
+      if (incident.rootCause) continue;
+      const events = await ctx.db
+        .query("events")
+        .withIndex("by_incident_time", (q) => q.eq("incidentId", incident._id))
+        .order("desc")
+        .take(100);
+      const diagnosis = events.find((event) => {
+        const metadata = event.metadata && typeof event.metadata === "object" ? (event.metadata as Record<string, unknown>) : {};
+        return event.type === "STATE_TRANSITION" && event.status === "DIAGNOSIS_REVIEW" && typeof metadata.rootCause === "string";
+      });
+      if (!diagnosis) continue;
+
+      const metadata = diagnosis.metadata as Record<string, unknown>;
+      const patch: { rootCause: string; confidence?: number } = { rootCause: String(metadata.rootCause) };
+      if (typeof metadata.confidence === "number" && Number.isFinite(metadata.confidence)) {
+        patch.confidence = Math.max(0, Math.min(1, metadata.confidence));
+      }
+      await ctx.db.patch(incident._id, patch);
+      updated += 1;
+      incidentIds.push(incident._id);
+    }
+
+    return { checked: incidents.length, updated, incidentIds };
+  },
+});
